@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.42) transparent;
+}
+
+html::-webkit-scrollbar {
+  width: 8px;
+}
+
+html::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.34);
+}
+
+html::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.44);
+}
+
+.live-demo-terminal .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
+}
+
+.live-demo-terminal .xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 6px !important;
+}
+
+.live-demo-terminal .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 6px !important;
+  border-radius: 999px;
+}
+
+.live-demo-terminal .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.live-demo-terminal .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.live-demo-terminal .xterm-viewport::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.42);
+}
+
+.live-demo-terminal .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.52);
+}
