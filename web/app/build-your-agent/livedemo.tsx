@@ -390,6 +390,9 @@ export function LiveDemo({
         onKeyDown,
       )
     }
+    // closeWorkspace intentionally stays outside deps here to preserve
+    // the original modal behavior while keeping the reverted article code path stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   useEffect(() => {
@@ -410,6 +413,7 @@ export function LiveDemo({
 
     body.style.overflow = "hidden"
     html.style.overflow = "hidden"
+    html.dataset.liveDemoOpen = "true"
 
     if (scrollbarWidth > 0) {
       body.style.paddingRight = `${scrollbarWidth}px`
@@ -426,6 +430,7 @@ export function LiveDemo({
       body.style.paddingRight =
         previous.bodyPaddingRight
       html.style.overflow = previous.htmlOverflow
+      delete html.dataset.liveDemoOpen
       scrollLockRef.current = null
     }
   }, [open])
@@ -479,16 +484,15 @@ export function LiveDemo({
       <button
         type="button"
         onClick={openWorkspace}
-        className="inline-flex items-center gap-1 rounded border border-emerald-500/50 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+        className="scrolly-icon-button"
         aria-label={`Open ${workspace.fileName} in WebContainer terminal`}
       >
         <Play size={14} />
-        Terminal
       </button>
 
       {open ? (
         <div
-          className="fixed inset-0 z-50 overflow-hidden overscroll-none bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.95),_rgba(239,246,255,0.9)_32%,_rgba(248,250,252,0.92)_68%,_rgba(255,255,255,0.98))] p-5 backdrop-blur-md"
+          className="live-demo-overlay fixed inset-0 z-50 overflow-hidden overscroll-none p-5"
           role="dialog"
           aria-modal="true"
         >
@@ -496,11 +500,9 @@ export function LiveDemo({
             <div className="flex flex-wrap items-center justify-between gap-4 pb-6">
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-slate-700">
-                  Live demo
+                  Playground
                 </div>
-                <div className="truncate text-xs text-slate-500">
-                  {workspace.fileName}
-                </div>
+
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -574,12 +576,14 @@ export function LiveDemo({
 
                 <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-4 overflow-hidden">
                   <div className="min-h-0 min-w-0 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_30px_80px_rgba(148,163,184,0.15)]">
-                    <div
-                      ref={terminalHostRef}
-                      className="live-demo-terminal h-full min-h-[18rem] w-full min-w-0 cursor-text overflow-hidden rounded-[22px] border border-slate-200 bg-white px-3 py-3 lg:min-h-[20rem]"
-                      onClick={focusTerminal}
-                      onMouseDown={focusTerminal}
-                    />
+                    <div className="live-demo-terminal-shell h-full min-h-[18rem] w-full min-w-0 overflow-hidden rounded-[22px] border border-slate-200 bg-white lg:min-h-[20rem]">
+                      <div
+                        ref={terminalHostRef}
+                        className="live-demo-terminal h-full w-full min-h-0 min-w-0 cursor-text"
+                        onClick={focusTerminal}
+                        onMouseDown={focusTerminal}
+                      />
+                    </div>
                   </div>
 
                   <div className="grid min-w-0 shrink-0 gap-3 sm:grid-cols-2">

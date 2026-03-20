@@ -16,6 +16,15 @@ const crossOriginHeaders = [
 const nextConfig = {
   // Configure `pageExtensions`` to include MDX files
   pageExtensions: ["js", "jsx", "mdx", "ts", "tsx"],
+  images: {
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "cdn.jsdelivr.net",
+        pathname: "/gh/shengxinjing/static@main/**",
+      },
+    ],
+  },
   async headers() {
     return [
       {

@@ -16,7 +16,7 @@ export function CopyButton({
 
   return (
     <button
-      className={`rounded border border-zinc-700/70 bg-zinc-950/80 p-1 text-zinc-200 transition hover:bg-gray-400/20 ${className}`}
+      className={`scrolly-icon-button ${className}`}
       aria-label="Copy to clipboard"
       onClick={() => {
         navigator.clipboard.writeText(text)

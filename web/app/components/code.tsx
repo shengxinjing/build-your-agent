@@ -1,14 +1,19 @@
-import { Pre, RawCode, highlight } from "codehike/code"
+import { RawCode, highlight } from "codehike/code"
 import { callout } from "./annotations/callout"
-
+import { ThemedPre } from "./themed-pre"
 
 export async function Code({ codeblock }: { codeblock: RawCode }) {
-  const highlighted = await highlight(codeblock, "github-dark")
+  const [light, dark] = await Promise.all([
+    highlight(codeblock, "github-light"),
+    highlight(codeblock, "github-dark"),
+  ])
+
   return (
-    <Pre
-      code={highlighted}
+    <ThemedPre
+      light={light}
+      dark={dark}
       handlers={[callout]}
-      className="border border-zinc-800"
+      className="rounded-[24px] border border-[var(--code-line)] bg-transparent"
     />
   )
 }
