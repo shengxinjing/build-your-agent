@@ -35,12 +35,14 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${sans.variable} ${serif.variable}`}
     >
-      <body>
+      <head>
         <script
           dangerouslySetInnerHTML={{
             __html: getThemeScript(),
           }}
         />
+      </head>
+      <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>

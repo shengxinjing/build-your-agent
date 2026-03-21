@@ -1,0 +1,193 @@
+## !intro 手把手搭一个 Agent
+
+这是一篇滚动联动式教程示例。左侧的讲解会随着阅读节奏一步一步推进，右侧的代码舞台保持稳定，只在当前章节切换到对应的代码状态。
+
+目标很简单：让阅读过程保持平静，让代码始终有锚点，并且让每一节都只解释一个足够小、足够明确的想法。
+
+## !!steps 权力的游戏
+
+《权力的游戏》是《冰与火之歌》系列的第一本，由 R.R. 马丁创作。故事发生在一个四季可能持续数年的世界里，登场人物众多，情节也相当复杂：一边是各大家族争夺铁王座，另一边是北境之外逐渐逼近的超自然威胁。
+
+```js ! agent.js
+// !mark
+const houses = [
+  "Stark",
+  "Lannister",
+  "Baratheon",
+  "Targaryen",
+]
+
+// !mark(1:3) gold
+const winner =
+  houses[
+    Math.floor(
+      Math.random() * houses.length,
+    )
+  ]
+// !border(1:2) yellow
+console.log(`Iron Throne: ${winner}`)
+console.log(`Iron Throne: ${winner}`)
+console.log(`Iron Throne: ${winner}`)
+console.log(`Iron Throne: ${winner}`)
+// !bg[5:16] orange
+console.log(`222Iron Throne: ${winner}`)
+
+```
+
+## !!steps 列王的纷争
+
+《列王的纷争》是系列的第二本，继续把这场史诗级纷争往前推进。七大王国陷入全面战争，新的王者不断崛起又倒下；与此同时，丹妮莉丝也带着逐渐成长的龙，试图重新踏上回归维斯特洛的道路。
+
+```js ! agent.js
+const houses = [
+  "Stark",
+  "Lannister",
+  "Baratheon",
+  "Targaryen",
+]
+// !focus(1:3)
+const clash = () => {
+  const winner =
+    houses[
+      Math.floor(
+        Math.random() * houses.length,
+      )
+    ]
+  return `${winner} wins the battle!`
+}
+
+console.log(clash())
+```
+
+## !!steps 剑刃风暴
+
+《剑刃风暴》是这个系列里最密集、也最震撼的一卷之一。战争仍在继续，联盟不断改写，角色们接连面对意料之外的背叛、牺牲与转折，也正因为这些时刻，这本书成为整套作品里最令人难忘的部分之一。
+
+```js ! agent.js
+const houses = [
+  "Stark",
+  "Lannister",
+  "Baratheon",
+]
+
+const reveal = () => {
+  const traitor =
+    houses[
+      Math.floor(
+        Math.random() * houses.length,
+      )
+    ]
+  return `${traitor} betrays the alliance!`
+}
+
+console.log(reveal())
+```
+
+## !!steps 群鸦的盛宴
+
+《群鸦的盛宴》把视角更多放在战争后的维斯特洛南方。王国表面上暂时从大战中缓了一口气，但政治博弈和权力争夺并没有结束，反而在疲惫与失序中变得更加隐秘和复杂。
+
+```js ! agent.js
+const houses = [
+  "Martell",
+  "Lannister",
+  "Baratheon",
+  "Tyrell",
+]
+
+const intrigue = () => {
+  const ally1 =
+    houses[
+      Math.floor(
+        Math.random() * houses.length,
+      )
+    ]
+  const ally2 =
+    houses[
+      Math.floor(
+        Math.random() * houses.length,
+      )
+    ]
+  return `${ally1} and ${ally2} form an alliance!`
+}
+
+console.log(intrigue())
+```
+
+## !!steps 魔龙的狂舞
+
+《魔龙的狂舞》与《群鸦的盛宴》在时间线上部分并行，但重点回到了北境以及狭海彼岸的角色。故事继续向前推进：龙、守夜人，以及迟迟未真正降临却始终笼罩全局的寒冬，都变得越来越重要。
+
+```js ! agent.js
+const houses = [
+  "Stark",
+  "Lannister",
+  "Baratheon",
+  "Targaryen",
+]
+
+const dragons = () => {
+  const dragon =
+    houses[
+      Math.floor(
+        Math.random() * houses.length,
+      )
+    ]
+  return `${dragon} has a dragon!`
+}
+
+console.log(dragons())
+```
+
+## !!steps 凛冬的寒风
+
+《凛冬的寒风》是读者等待已久的第六卷，理论上会继续推进维斯特洛错综复杂的主线，并带来更多新的转折。直到今天，它依然是这套作品里最被期待、也最让人焦急的一本。
+
+```js ! agent.js
+const houses = [
+  "Stark",
+  "Lannister",
+  "Baratheon",
+  "Targaryen",
+  "Martell",
+  "Tyrell",
+  "Greyjoy",
+]
+
+const winterIsComing = () => {
+  const isComing = Math.random() > 0.99
+  if (isComing) {
+    return "Winter is coming!"
+  } else {
+    return "Winter is not coming."
+  }
+}
+
+console.log(winterIsComing())
+```
+
+## !!steps 春晓之梦
+
+《春晓之梦》是传说中的最终卷，原本被设想为整个史诗故事的结尾。它会不会真正到来仍然是个悬念，但毫无疑问，它依旧是现代奇幻文学里最令人期待的未完成作品之一。
+
+```js ! agent.js
+const houses = [
+  "Stark",
+  "Lannister",
+  "Baratheon",
+  "Targaryen",
+  "Martell",
+  "Tyrell",
+  "Greyjoy",
+]
+
+const keepDreaming = () => {
+  return "Not gonna happen..."
+}
+
+console.log(keepDreaming())
+```
+
+## !outro
+
+这个结尾部分刻意保持得很简单。在一篇真正的教程里，这里通常会用来回顾这一章最重要的结论、指出下一章应该继续看的内容，并且给读者一个清晰的继续前进的方向。

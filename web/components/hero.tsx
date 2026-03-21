@@ -6,6 +6,8 @@ import {
   Twitter,
   Youtube,
 } from "lucide-react"
+import type { Locale } from "@/lib/i18n"
+import { getSiteCopy } from "@/lib/site-copy"
 import { site } from "@/lib/site"
 
 function BilibiliIcon() {
@@ -69,10 +71,16 @@ function SocialIcon({
   return icons[kind]
 }
 
-export function HomeHero() {
+export function HomeHero({
+  locale = "cn",
+}: {
+  locale?: Locale
+}) {
+  const copy = getSiteCopy(locale)
+
   return (
     <section className="home-signoff">
-      <p className="home-signoff__text">{site.tagline}</p>
+      <p className="home-signoff__text">{copy.tagline}</p>
       <div className="home-signoff__icons">
         {site.socials.map((social) =>
           social.kind === "wechat" ? (

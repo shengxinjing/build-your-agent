@@ -1,6 +1,7 @@
 export const site = {
   name: "shengxj",
   author: "Shengxinjing",
+  logoSrc: "/avatar.webp",
   tagline: "a frontend developers",
   intro:
     "A minimal editorial home for essays, tutorials, and experiments around AI tooling.",

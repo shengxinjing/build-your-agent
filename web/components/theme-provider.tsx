@@ -14,10 +14,58 @@ const ThemeContext =
   React.createContext<ThemeContextValue | null>(null)
 const STORAGE_KEY = "build-your-agent-theme"
 
+function readStoredTheme(): ThemeMode | null {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const stored = window.localStorage.getItem(STORAGE_KEY)
+  if (stored === "light" || stored === "dark") {
+    return stored
+  }
+
+  return null
+}
+
+function readThemeFromDom(): ThemeMode | null {
+  if (typeof document === "undefined") {
+    return null
+  }
+
+  const root = document.documentElement
+  const datasetTheme = root.dataset.theme
+
+  if (datasetTheme === "light" || datasetTheme === "dark") {
+    return datasetTheme
+  }
+
+  if (root.classList.contains("dark")) {
+    return "dark"
+  }
+
+  return null
+}
+
+function readSystemTheme(): ThemeMode {
+  if (typeof window === "undefined") {
+    return "light"
+  }
+
+  return window.matchMedia("(prefers-color-scheme: dark)")
+    .matches
+    ? "dark"
+    : "light"
+}
+
+function resolveTheme(): ThemeMode {
+  return readStoredTheme() ?? readSystemTheme()
+}
+
 function applyTheme(theme: ThemeMode) {
   const root = document.documentElement
   root.dataset.theme = theme
   root.classList.toggle("dark", theme === "dark")
+  root.style.colorScheme = theme
 }
 
 export function ThemeProvider({
@@ -26,22 +74,40 @@ export function ThemeProvider({
   children: React.ReactNode
 }) {
   const [resolvedTheme, setResolvedTheme] =
-    React.useState<ThemeMode>("light")
+    React.useState<ThemeMode>(
+      () => readThemeFromDom() ?? resolveTheme(),
+    )
 
   React.useEffect(() => {
-    const stored =
-      window.localStorage.getItem(STORAGE_KEY)
-    const nextTheme =
-      stored === "light" || stored === "dark"
-        ? stored
-        : window.matchMedia(
-            "(prefers-color-scheme: dark)",
-          ).matches
-          ? "dark"
-          : "light"
+    const media = window.matchMedia(
+      "(prefers-color-scheme: dark)",
+    )
+    const domTheme = readThemeFromDom()
 
-    setResolvedTheme(nextTheme)
-    applyTheme(nextTheme)
+    if (domTheme) {
+      setResolvedTheme(domTheme)
+    } else {
+      const nextTheme = resolveTheme()
+      setResolvedTheme(nextTheme)
+      applyTheme(nextTheme)
+    }
+
+    const handleSystemChange = () => {
+      if (!readStoredTheme()) {
+        const nextTheme = readSystemTheme()
+        setResolvedTheme(nextTheme)
+        applyTheme(nextTheme)
+      }
+    }
+
+    media.addEventListener("change", handleSystemChange)
+
+    return () => {
+      media.removeEventListener(
+        "change",
+        handleSystemChange,
+      )
+    }
   }, [])
 
   const setTheme = React.useCallback((theme: ThemeMode) => {
@@ -80,4 +146,8 @@ export function useTheme() {
   }
 
   return context
+}
+
+export function useDomThemeMode() {
+  return useTheme().resolvedTheme
 }

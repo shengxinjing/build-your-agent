@@ -10,6 +10,7 @@ export function getThemeScript() {
           : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
         var root = document.documentElement;
         root.dataset.theme = theme;
+        root.style.colorScheme = theme;
         if (theme === "dark") root.classList.add("dark");
         else root.classList.remove("dark");
       } catch (error) {}

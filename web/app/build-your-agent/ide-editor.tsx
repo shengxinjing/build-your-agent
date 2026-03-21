@@ -2,6 +2,8 @@
 
 import Editor from "@monaco-editor/react"
 import type * as Monaco from "monaco-editor"
+import { useDomThemeMode } from "@/components/theme-provider"
+import { useEffect, useRef } from "react"
 
 type IdeEditorProps = {
   fileName: string
@@ -16,28 +18,46 @@ export function IdeEditor({
   onChange,
   value,
 }: IdeEditorProps) {
+  const domTheme = useDomThemeMode()
+  const isDark = domTheme === "dark"
+  const monacoRef = useRef<typeof Monaco | null>(null)
+  const themeName = isDark ? "vs-dark" : "vs"
+
+  useEffect(() => {
+    if (!monacoRef.current) {
+      return
+    }
+
+    monacoRef.current.editor.setTheme(themeName)
+  }, [themeName])
+
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden overscroll-contain rounded-[28px] border border-slate-200 bg-white shadow-[0_30px_80px_rgba(148,163,184,0.18)]">
-      <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+    <div
+      className="live-demo-panel flex h-full min-h-0 flex-col overflow-hidden overscroll-contain rounded-[28px] shadow-[0_30px_80px_rgba(15,23,42,0.16)] dark:shadow-[0_30px_80px_rgba(0,0,0,0.34)]"
+    >
+      <div className="live-demo-panel__header flex items-center justify-between border-b px-5 py-4">
         <div className="w-16" />
-        <div className="text-[15px] font-semibold text-slate-500">
+        <div className="live-demo-panel__title text-[15px] font-semibold">
           {fileName}
         </div>
-        <div className="w-16 text-right text-[11px] uppercase tracking-[0.16em] text-slate-400">
+        <div className="live-demo-panel__meta w-16 text-right text-[11px] uppercase tracking-[0.16em]">
           Editable
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden overscroll-contain">
         <Editor
-          beforeMount={defineEditorTheme}
           defaultLanguage={language}
           language={language}
           loading={
-            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+            <div className="live-demo-panel__loading flex h-full items-center justify-center text-sm">
               Loading editor...
             </div>
           }
+          onMount={(_, monaco) => {
+            monacoRef.current = monaco
+            monaco.editor.setTheme(themeName)
+          }}
           onChange={(nextValue) => {
             onChange(nextValue ?? "")
           }}
@@ -69,38 +89,10 @@ export function IdeEditor({
             tabSize: 2,
             wordWrap: "off",
           }}
-          theme="webcontainers-home"
+          theme={themeName}
           value={value}
         />
       </div>
     </div>
   )
-}
-
-function defineEditorTheme(monaco: typeof Monaco) {
-  monaco.editor.defineTheme("webcontainers-home", {
-    base: "vs",
-    inherit: true,
-    colors: {
-      "editor.background": "#FFFFFF",
-      "editor.foreground": "#0F172A",
-      "editor.lineHighlightBackground": "#FFFFFF",
-      "editorLineNumber.foreground": "#4F8FBF",
-      "editorLineNumber.activeForeground": "#2563EB",
-      "editor.selectionBackground": "#DBEAFE",
-      "editor.inactiveSelectionBackground": "#E2E8F0",
-      "editorCursor.foreground": "#9333EA",
-      "editorWhitespace.foreground": "#E2E8F0",
-    },
-    rules: [
-      { token: "comment", foreground: "16A34A" },
-      { token: "keyword", foreground: "C026D3" },
-      { token: "string", foreground: "DC2626" },
-      { token: "number", foreground: "2563EB" },
-      { token: "identifier", foreground: "1D4ED8" },
-      { token: "delimiter", foreground: "1E3A8A" },
-      { token: "type", foreground: "7C3AED" },
-      { token: "tag", foreground: "0F766E" },
-    ],
-  })
 }
