@@ -1,4 +1,5 @@
 import type { Metadata } from "next"
+import Script from "next/script"
 import {
   Manrope,
   Source_Serif_4,
@@ -36,7 +37,9 @@ export default function RootLayout({
       className={`${sans.variable} ${serif.variable}`}
     >
       <head>
-        <script
+        <Script
+          id="theme-script"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: getThemeScript(),
           }}

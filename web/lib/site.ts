@@ -29,7 +29,7 @@ export const site = {
     {
       label: "Telegram",
       kind: "telegram",
-      href: "https://t.me/shengxj1",
+      href: "https://t.me/shengxj11",
     },
     {
       label: "WeChat",

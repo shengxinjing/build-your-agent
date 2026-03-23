@@ -3,6 +3,7 @@
 import React from "react"
 
 export type ThemeMode = "light" | "dark"
+type ThemeSource = "system" | "user"
 
 type ThemeContextValue = {
   resolvedTheme: ThemeMode
@@ -46,6 +47,20 @@ function readThemeFromDom(): ThemeMode | null {
   return null
 }
 
+function readThemeSourceFromDom(): ThemeSource | null {
+  if (typeof document === "undefined") {
+    return null
+  }
+
+  const source = document.documentElement.dataset.themeSource
+
+  if (source === "system" || source === "user") {
+    return source
+  }
+
+  return null
+}
+
 function readSystemTheme(): ThemeMode {
   if (typeof window === "undefined") {
     return "light"
@@ -61,9 +76,13 @@ function resolveTheme(): ThemeMode {
   return readStoredTheme() ?? readSystemTheme()
 }
 
-function applyTheme(theme: ThemeMode) {
+function applyTheme(
+  theme: ThemeMode,
+  source: ThemeSource,
+) {
   const root = document.documentElement
   root.dataset.theme = theme
+  root.dataset.themeSource = source
   root.classList.toggle("dark", theme === "dark")
   root.style.colorScheme = theme
 }
@@ -74,29 +93,31 @@ export function ThemeProvider({
   children: React.ReactNode
 }) {
   const [resolvedTheme, setResolvedTheme] =
-    React.useState<ThemeMode>(
-      () => readThemeFromDom() ?? resolveTheme(),
-    )
+    React.useState<ThemeMode>(() => readThemeFromDom() ?? "light")
 
   React.useEffect(() => {
     const media = window.matchMedia(
       "(prefers-color-scheme: dark)",
     )
     const domTheme = readThemeFromDom()
+    const domSource = readThemeSourceFromDom()
 
     if (domTheme) {
       setResolvedTheme(domTheme)
     } else {
       const nextTheme = resolveTheme()
+      const nextSource = readStoredTheme() ? "user" : "system"
       setResolvedTheme(nextTheme)
-      applyTheme(nextTheme)
+      applyTheme(nextTheme, nextSource)
     }
 
     const handleSystemChange = () => {
-      if (!readStoredTheme()) {
+      const source = readThemeSourceFromDom() ?? domSource
+
+      if (!readStoredTheme() && source !== "user") {
         const nextTheme = readSystemTheme()
         setResolvedTheme(nextTheme)
-        applyTheme(nextTheme)
+        applyTheme(nextTheme, "system")
       }
     }
 
@@ -112,7 +133,7 @@ export function ThemeProvider({
 
   const setTheme = React.useCallback((theme: ThemeMode) => {
     setResolvedTheme(theme)
-    applyTheme(theme)
+    applyTheme(theme, "user")
     window.localStorage.setItem(STORAGE_KEY, theme)
   }, [])
 

@@ -57,7 +57,6 @@ export function BuildYourAgentArticlePage({
   locale: Locale
 }) {
   const { intro, steps, outro } = parseRoot(content, Schema)
-
   return (
     <main className="site-shell scrolly-shell">
       <SiteHeader locale={locale} pathname="/build-your-agent" />
@@ -117,7 +116,6 @@ async function Code({
     highlight(codeblock, "github-light"),
     highlight(codeblock, "github-dark"),
   ])
-
   return (
     <div className="scrolly-code">
       <div className="scrolly-code__meta">{dark.meta}</div>

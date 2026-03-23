@@ -870,7 +870,7 @@ html[data-theme="dark"] .scrolly-icon-button--accent:hover {
   margin-bottom: 3rem;
   padding-left: 1.35rem;
   padding-top: 0.45rem;
-  padding-bottom: 0.8rem;
+  /* padding-bottom: 0.8rem; */
   border-left: 1px solid var(--line);
   border-radius: 0 18px 18px 0;
   background: color-mix(in srgb,
