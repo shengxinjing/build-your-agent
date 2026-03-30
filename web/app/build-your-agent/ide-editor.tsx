@@ -9,6 +9,7 @@ type IdeEditorProps = {
   fileName: string
   language: string
   onChange: (value: string) => void
+  readOnly?: boolean
   value: string
 }
 
@@ -16,6 +17,7 @@ export function IdeEditor({
   fileName,
   language,
   onChange,
+  readOnly = false,
   value,
 }: IdeEditorProps) {
   const domTheme = useDomThemeMode()
@@ -41,7 +43,7 @@ export function IdeEditor({
           {fileName}
         </div>
         <div className="live-demo-panel__meta w-16 text-right text-[11px] uppercase tracking-[0.16em]">
-          Editable
+          {readOnly ? "Read-only" : "Editable"}
         </div>
       </div>
 
@@ -63,7 +65,8 @@ export function IdeEditor({
           }}
           options={{
             automaticLayout: true,
-            cursorBlinking: "smooth",
+            cursorBlinking: readOnly ? "solid" : "smooth",
+            readOnly,
             fontFamily:
               'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
             fontLigatures: true,

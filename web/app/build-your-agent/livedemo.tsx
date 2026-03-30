@@ -9,6 +9,9 @@ import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 import {
   ChevronRight,
+  File,
+  FileJson,
+  FileText,
   Play,
   RefreshCw,
   X,
@@ -37,10 +40,17 @@ declare global {
 }
 
 type LiveDemoProps = {
-  code: string
-  lang: string
+  activeFileName: string
+  entryFileName: string
+  files: DemoFile[]
   locale: Locale
-  meta?: string
+}
+
+type DemoFile = {
+  code: string
+  fileName: string
+  lang: string
+  meta: string
 }
 
 type Status =
@@ -58,7 +68,14 @@ type TerminalRuntime = {
   terminal: Terminal
 }
 
+type WorkspaceFileEntry = {
+  contents: string
+  fileName: string
+}
+
 type WorkspaceFiles = {
+  allFiles: WorkspaceFileEntry[]
+  entryFileName: string
   fileName: string
   managedPaths: string[]
   suggestedCommands: CommandAction[]
@@ -71,24 +88,51 @@ type CommandAction = {
 }
 
 export function LiveDemo({
-  code,
-  lang,
+  activeFileName,
+  entryFileName,
+  files,
   locale,
-  meta = "",
 }: LiveDemoProps) {
   const domTheme = useDomThemeMode()
   const isDark = domTheme === "dark"
   const copy = liveDemoCopy[locale]
-  const [editorValue, setEditorValue] = useState(code)
-  const workspace = useMemo(
+  const baseWorkspace = useMemo(
     () =>
       createWorkspaceFiles({
-        code: editorValue,
-        lang,
-        meta,
+        activeFileName,
+        entryFileName,
+        files,
       }),
-    [editorValue, lang, meta],
+    [activeFileName, entryFileName, files],
   )
+  const [drafts, setDrafts] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      baseWorkspace.allFiles.map((f) => [
+        f.fileName,
+        f.contents,
+      ]),
+    ),
+  )
+  const [editorFileName, setEditorFileName] =
+    useState(activeFileName)
+  const workspace = useMemo(() => {
+    const tree = { ...baseWorkspace.tree }
+
+    for (const entry of baseWorkspace.allFiles) {
+      const draft = drafts[entry.fileName]
+
+      if (draft !== undefined) {
+        tree[entry.fileName] = {
+          file: { contents: draft },
+        }
+      }
+    }
+
+    return { ...baseWorkspace, tree }
+  }, [baseWorkspace, drafts])
+  const editorValue = drafts[editorFileName] ?? ""
 
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<Status>("idle")
@@ -116,8 +160,19 @@ export function LiveDemo({
   } | null>(null)
 
   useEffect(() => {
-    setEditorValue(code)
-  }, [code, lang, meta])
+    setDrafts(
+      Object.fromEntries(
+        baseWorkspace.allFiles.map((f) => [
+          f.fileName,
+          f.contents,
+        ]),
+      ),
+    )
+  }, [baseWorkspace])
+
+  useEffect(() => {
+    setEditorFileName(activeFileName)
+  }, [activeFileName])
 
   useEffect(() => {
     workspaceRef.current = workspace
@@ -485,7 +540,7 @@ export function LiveDemo({
 
     const timeoutId = window.setTimeout(() => {
       void writeWorkspaceFile(
-        workspace.fileName,
+        editorFileName,
         editorValue,
       )
     }, 180)
@@ -493,7 +548,7 @@ export function LiveDemo({
     return () => {
       window.clearTimeout(timeoutId)
     }
-  }, [editorValue, open, workspace.fileName])
+  }, [editorFileName, editorValue, open])
 
   const openWorkspace = () => {
     setOpen(true)
@@ -581,21 +636,34 @@ export function LiveDemo({
             <div className="grid min-h-0 min-w-0 flex-1 gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(22rem,0.92fr)] xl:grid-cols-[minmax(0,1.08fr)_minmax(26rem,0.92fr)]">
               <section className="flex min-h-0 min-w-0 flex-col">
                 <div className="pb-4">
-
                   <div className="live-demo-muted mt-1 text-sm leading-6">
                     {copy.editableHint}
                   </div>
                 </div>
 
-                <div className="min-h-0 min-w-0 flex-1">
-                  <IdeEditor
-                    fileName={workspace.fileName}
-                    language={getEditorLanguage(
-                      workspace.fileName,
-                    )}
-                    onChange={setEditorValue}
-                    value={editorValue}
+                <div className="flex min-h-0 min-w-0 flex-1 gap-3">
+                  <FileTree
+                    files={workspace.allFiles}
+                    activeFileName={editorFileName}
+                    onSelect={setEditorFileName}
                   />
+
+                  <div className="min-h-0 min-w-0 flex-1">
+                    <IdeEditor
+                      key={editorFileName}
+                      fileName={editorFileName}
+                      language={getEditorLanguage(
+                        editorFileName,
+                      )}
+                      onChange={(value) => {
+                        setDrafts((current) => ({
+                          ...current,
+                          [editorFileName]: value,
+                        }))
+                      }}
+                      value={editorValue}
+                    />
+                  </div>
                 </div>
               </section>
 
@@ -604,7 +672,7 @@ export function LiveDemo({
                   <div className="live-demo-muted mt-1 text-sm leading-6">
                     {copy.terminalHintPrefix}{" "}
                     <code className="live-demo-inline-code rounded-md px-1.5 py-0.5 text-[13px] font-medium">
-                      {`node ${workspace.fileName}`}
+                      {`node ${workspace.entryFileName}`}
                     </code>{" "}
                     {copy.terminalHintSuffix}
                   </div>
@@ -718,6 +786,79 @@ function StatusBadge({
     >
       {label}
     </span>
+  )
+}
+
+function FileTree({
+  files,
+  activeFileName,
+  onSelect,
+}: {
+  files: WorkspaceFileEntry[]
+  activeFileName: string
+  onSelect: (fileName: string) => void
+}) {
+  return (
+    <div className="live-demo-file-tree shrink-0 overflow-y-auto rounded-[20px] py-3">
+      <div className="live-demo-file-tree__header px-4 pb-2 text-[11px] font-semibold uppercase tracking-[0.12em]">
+        Files
+      </div>
+      {files.map((file) => {
+        const isActive =
+          file.fileName === activeFileName
+
+        return (
+          <button
+            key={file.fileName}
+            type="button"
+            onClick={() => onSelect(file.fileName)}
+            className={`live-demo-file-tree__item flex w-full items-center gap-2 px-4 py-1.5 text-left text-[13px] transition ${
+              isActive
+                ? "live-demo-file-tree__item--active"
+                : ""
+            }`}
+          >
+            <FileIcon fileName={file.fileName} />
+            <span className="min-w-0 truncate">
+              {file.fileName}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function FileIcon({
+  fileName,
+}: {
+  fileName: string
+}) {
+  const ext = getExtension(fileName)
+
+  if (fileName === "package.json" || ext === "json") {
+    return (
+      <FileJson
+        size={14}
+        className="shrink-0 opacity-60"
+      />
+    )
+  }
+
+  if (ext === "md") {
+    return (
+      <FileText
+        size={14}
+        className="shrink-0 opacity-60"
+      />
+    )
+  }
+
+  return (
+    <File
+      size={14}
+      className="shrink-0 opacity-60"
+    />
   )
 }
 
@@ -925,51 +1066,78 @@ async function syncManagedFiles(
 }
 
 function createWorkspaceFiles({
-  code,
-  lang,
-  meta,
+  activeFileName,
+  entryFileName,
+  files,
 }: {
-  code: string
-  lang: string
-  meta: string
+  activeFileName: string
+  entryFileName: string
+  files: DemoFile[]
 }): WorkspaceFiles {
-  const fileName = getFileName(meta, lang)
+  const fileName = activeFileName
+
+  const readmeContents = [
+    "# Scrollycoding Demo",
+    "",
+    `Entry file: ${entryFileName}`,
+    "",
+    "Useful commands:",
+    ...getSuggestedCommands(entryFileName).map(
+      ({ command }) => `- ${command}`,
+    ),
+  ].join("\n")
+
+  const packageJsonContents = JSON.stringify(
+    {
+      name: "scrollycoding-live-demo",
+      private: true,
+      type: "module",
+    },
+    null,
+    2,
+  )
+
+  const allFiles: WorkspaceFileEntry[] = [
+    ...files.map((file) => ({
+      contents: file.code,
+      fileName: file.fileName,
+    })),
+    {
+      contents: packageJsonContents,
+      fileName: "package.json",
+    },
+    {
+      contents: readmeContents,
+      fileName: "README.md",
+    },
+  ]
 
   return {
+    allFiles,
+    entryFileName,
     fileName,
-    managedPaths: ["README.md", "package.json", fileName],
-    suggestedCommands: getSuggestedCommands(fileName),
+    managedPaths: [
+      "README.md",
+      "package.json",
+      ...files.map((file) => file.fileName),
+    ],
+    suggestedCommands: getSuggestedCommands(entryFileName),
     tree: {
-      [fileName]: {
-        file: {
-          contents: code,
-        },
-      },
+      ...Object.fromEntries(
+        files.map((file) => [
+          file.fileName,
+          {
+            file: {
+              contents: file.code,
+            },
+          },
+        ]),
+      ),
       "README.md": {
-        file: {
-          contents: [
-            "# Scrollycoding Demo",
-            "",
-            `Mounted file: ${fileName}`,
-            "",
-            "Useful commands:",
-            ...getSuggestedCommands(fileName).map(
-              ({ command }) => `- ${command}`,
-            ),
-          ].join("\n"),
-        },
+        file: { contents: readmeContents },
       },
       "package.json": {
-        file: {
-          contents: JSON.stringify(
-            {
-              name: "scrollycoding-live-demo",
-              private: true,
-            },
-            null,
-            2,
-          ),
-        },
+        file: { contents: packageJsonContents },
       },
     },
   }
@@ -1025,37 +1193,6 @@ async function writeWorkspaceFile(
   await instance.fs.writeFile(fileName, contents)
 }
 
-function getFileName(meta: string, lang: string) {
-  const fromMeta = meta
-    .split(/\s+/)
-    .map((token) => token.trim())
-    .find((token) => /\.[a-z0-9]+$/i.test(token))
-
-  if (fromMeta) {
-    return sanitizeFileName(fromMeta)
-  }
-
-  const normalizedLang = lang.toLowerCase()
-
-  if (normalizedLang === "mjs") {
-    return "snippet.mjs"
-  }
-
-  if (normalizedLang === "ts") {
-    return "snippet.ts"
-  }
-
-  if (normalizedLang === "html") {
-    return "snippet.html"
-  }
-
-  if (normalizedLang === "css") {
-    return "snippet.css"
-  }
-
-  return "snippet.js"
-}
-
 function getExtension(fileName: string) {
   const match = fileName.match(/\.([a-z0-9]+)$/i)
   return match?.[1].toLowerCase() || ""
@@ -1095,10 +1232,6 @@ function getEditorLanguage(fileName: string) {
   return extension || "javascript"
 }
 
-function sanitizeFileName(fileName: string) {
-  return fileName.replace(/[^a-zA-Z0-9._-]/g, "-")
-}
-
 function getErrorMessage(cause: unknown) {
   if (cause instanceof Error) {
     return cause.message
@@ -1106,3 +1239,4 @@ function getErrorMessage(cause: unknown) {
 
   return "Failed to start the WebContainer shell."
 }
+

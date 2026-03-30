@@ -3,6 +3,7 @@
 import { Block, CodeBlock, parseRoot } from "codehike/blocks"
 import type { MDXProps } from "mdx/types.js"
 import type { ReactElement } from "react"
+import path from "node:path"
 import { z } from "zod"
 import {
   AnnotationHandler,
@@ -14,16 +15,21 @@ import {
   SelectionProvider,
 } from "codehike/utils/selection"
 import { tokenTransitions } from "../components/annotations/token-transitions"
-import { CopyButton } from "./button"
 import { mark } from "./mark"
 import { focus } from "./focus"
-import { LiveDemo } from "./livedemo"
 import { callout } from "../components/annotations/callout"
 import { ThemedPre } from "../components/themed-pre"
 import { CodeStage } from "./code-stage"
 import { SiteHeader } from "@/components/site-header"
 import { HomeHero } from "@/components/hero"
 import type { Locale } from "@/lib/i18n"
+import {
+  mergeDisplayFiles,
+  parseCodeMeta,
+  type TutorialDisplayFile,
+} from "@/lib/tutorial-files"
+import { loadSharedCodeFiles } from "@/lib/tutorial-files-server"
+import { buildYourAgentSharedFiles } from "./shared-files"
 
 type MDXContent = (props: MDXProps) => ReactElement
 
@@ -32,6 +38,11 @@ const Schema = Block.extend({
   steps: z.array(Block.extend({ code: CodeBlock })),
   outro: Block,
 })
+
+const ARTICLE_DIR = path.join(
+  process.cwd(),
+  "app/build-your-agent",
+)
 
 const borderHandler: AnnotationHandler = {
   name: "border",
@@ -49,7 +60,7 @@ const bgHandler: AnnotationHandler = {
   },
 }
 
-export function BuildYourAgentArticlePage({
+export async function BuildYourAgentArticlePage({
   content,
   locale,
 }: {
@@ -57,6 +68,42 @@ export function BuildYourAgentArticlePage({
   locale: Locale
 }) {
   const { intro, steps, outro } = parseRoot(content, Schema)
+  const sharedFiles = await loadSharedCodeFiles(
+    buildYourAgentSharedFiles,
+    ARTICLE_DIR,
+  )
+  const stageSteps = await Promise.all(
+    steps.map(async (step) => {
+      const primaryFile = createPrimaryDisplayFile(step.code)
+      const mergedFiles = mergeDisplayFiles(
+        primaryFile,
+        sharedFiles,
+      )
+      const preparedFiles = await Promise.all(
+        mergedFiles.map((file) =>
+          prepareStageFile(file),
+        ),
+      )
+
+      return {
+        entryFileName: primaryFile.fileName,
+        files: preparedFiles.map((file) => ({
+          copyText: file.copyText,
+          fileName: file.fileName,
+          lang: file.lang,
+          meta: file.meta,
+          runtimeCode: file.runtimeCode,
+        })),
+        animatedRenders: preparedFiles.map(
+          (file) => file.animatedRender,
+        ),
+        staticRenders: preparedFiles.map(
+          (file) => file.staticRender,
+        ),
+      }
+    }),
+  )
+
   return (
     <main className="site-shell scrolly-shell">
       <SiteHeader locale={locale} pathname="/build-your-agent" />
@@ -85,9 +132,17 @@ export function BuildYourAgentArticlePage({
           <div className="scrolly-stage__stick">
             <div className="scrolly-stage__frame">
               <CodeStage
-                from={steps.map((step) => (
-                  <Code codeblock={step.code} locale={locale} />
-                ))}
+                locale={locale}
+                animatedRenders={stageSteps.map(
+                  (step) => step.animatedRenders,
+                )}
+                staticRenders={stageSteps.map(
+                  (step) => step.staticRenders,
+                )}
+                steps={stageSteps.map((step) => ({
+                  entryFileName: step.entryFileName,
+                  files: step.files,
+                }))}
               />
             </div>
           </div>
@@ -105,42 +160,79 @@ export function BuildYourAgentArticlePage({
   )
 }
 
-async function Code({
-  codeblock,
-  locale,
-}: {
-  codeblock: RawCode
-  locale: Locale
-}) {
+async function prepareStageFile(
+  file: TutorialDisplayFile,
+) {
   const [light, dark] = await Promise.all([
-    highlight(codeblock, "github-light"),
-    highlight(codeblock, "github-dark"),
+    highlight(
+      {
+        lang: file.lang,
+        meta: file.meta,
+        value: file.displayValue,
+      },
+      "github-light",
+    ),
+    highlight(
+      {
+        lang: file.lang,
+        meta: file.meta,
+        value: file.displayValue,
+      },
+      "github-dark",
+    ),
   ])
+
   return (
-    <div className="scrolly-code">
-      <div className="scrolly-code__meta">{dark.meta}</div>
-      <div className="absolute right-2 top-2 z-10 flex items-center gap-2">
-        <LiveDemo
-          code={dark.code}
-          lang={dark.lang}
-          locale={locale}
-          meta={dark.meta}
+    {
+      copyText: dark.code,
+      fileName: file.fileName,
+      lang: dark.lang,
+      meta: dark.meta,
+      animatedRender: (
+        <ThemedPre
+          light={light}
+          dark={dark}
+          handlers={[
+            tokenTransitions,
+            mark,
+            focus,
+            borderHandler,
+            bgHandler,
+            callout,
+          ]}
+          className="h-full bg-transparent pt-10"
         />
-        <CopyButton text={dark.code} />
-      </div>
-      <ThemedPre
-        light={light}
-        dark={dark}
-        handlers={[
-          tokenTransitions,
-          mark,
-          focus,
-          borderHandler,
-          bgHandler,
-          callout,
-        ]}
-        className="h-full bg-transparent pt-10"
-      />
-    </div>
+      ),
+      staticRender: (
+        <ThemedPre
+          light={light}
+          dark={dark}
+          handlers={[
+            mark,
+            focus,
+            borderHandler,
+            bgHandler,
+            callout,
+          ]}
+          className="h-full bg-transparent pt-10"
+        />
+      ),
+      runtimeCode: file.runtimeValue,
+    }
   )
+}
+
+function createPrimaryDisplayFile(codeblock: RawCode) {
+  const parsedMeta = parseCodeMeta(
+    codeblock.meta,
+    codeblock.lang,
+  )
+
+  return {
+    displayValue: codeblock.value,
+    fileName: parsedMeta.fileName,
+    lang: codeblock.lang,
+    meta: codeblock.meta,
+    runtimeValue: codeblock.value,
+  } satisfies TutorialDisplayFile
 }

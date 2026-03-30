@@ -273,6 +273,34 @@ html[data-theme="dark"] .live-demo-command-card:hover {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
 }
 
+.live-demo-file-tree {
+  width: 11rem;
+  background: var(--live-demo-panel-bg);
+  border: 1px solid var(--live-demo-panel-border);
+}
+
+.live-demo-file-tree__header {
+  color: var(--live-demo-panel-muted);
+}
+
+.live-demo-file-tree__item {
+  color: var(--live-demo-panel-muted);
+}
+
+.live-demo-file-tree__item:hover {
+  color: var(--live-demo-panel-text);
+  background: color-mix(in srgb,
+      var(--live-demo-panel-bg) 80%,
+      var(--live-demo-panel-border));
+}
+
+.live-demo-file-tree__item--active {
+  color: var(--live-demo-panel-text);
+  background: color-mix(in srgb,
+      var(--live-demo-panel-bg) 60%,
+      var(--live-demo-panel-border));
+}
+
 .live-demo-terminal,
 .live-demo-terminal .xterm {
   height: 100%;
@@ -942,6 +970,46 @@ html[data-theme="dark"] .scrolly-icon-button--accent:hover {
   background: color-mix(in srgb,
       var(--muted) 62%,
       transparent);
+}
+
+.scrolly-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-bottom: 0.85rem;
+}
+
+.scrolly-tab {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb,
+      var(--surface-elevated) 72%,
+      transparent);
+  padding: 0.35rem 0.8rem;
+  font-size: 0.76rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    background-color 160ms ease;
+}
+
+.scrolly-tab:hover {
+  border-color: color-mix(in srgb,
+      var(--text) 14%,
+      var(--line));
+  color: var(--text);
+}
+
+.scrolly-tab--active {
+  border-color: color-mix(in srgb,
+      var(--accent) 32%,
+      var(--line));
+  background: color-mix(in srgb,
+      var(--accent) 8%,
+      var(--surface-elevated));
+  color: var(--text);
 }
 
 .scrolly-code {
