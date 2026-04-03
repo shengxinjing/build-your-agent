@@ -1,0 +1,11 @@
+{
+  "id": "mail-k098vck3",
+  "createdAt": "2026-03-30T16:37:29.215Z",
+  "kind": "response",
+  "request_id": "req-3asp1dqc",
+  "task_id": "task-102",
+  "from": "reviewer",
+  "to": "lead",
+  "status": "done",
+  "body": "Use tests and protocol validation to catch drift early."
+}

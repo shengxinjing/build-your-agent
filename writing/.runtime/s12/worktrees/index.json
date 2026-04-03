@@ -1,0 +1,19 @@
+[
+  {
+    "name": "auth-refactor",
+    "branch": "agent/auth-refactor",
+    "path": "/Users/hugsun/github/woniuppp/build-your-agent/writing/.runtime/s12/worktrees/auth-refactor",
+    "taskId": "task-001",
+    "status": "removed",
+    "createdAt": "2026-03-30T16:37:29.362Z",
+    "removedAt": "2026-03-30T16:37:29.389Z"
+  },
+  {
+    "name": "ui-login",
+    "branch": "agent/ui-login",
+    "path": "/Users/hugsun/github/woniuppp/build-your-agent/writing/.runtime/s12/worktrees/ui-login",
+    "taskId": "task-002",
+    "status": "active",
+    "createdAt": "2026-03-30T16:37:29.382Z"
+  }
+]

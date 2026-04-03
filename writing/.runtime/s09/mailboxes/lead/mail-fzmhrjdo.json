@@ -1,0 +1,8 @@
+{
+  "id": "mail-fzmhrjdo",
+  "createdAt": "2026-03-30T16:37:29.170Z",
+  "from": "reviewer",
+  "to": "lead",
+  "subject": "reply:Need review",
+  "body": "Review note: add self-tests early so each step can fail in isolation."
+}

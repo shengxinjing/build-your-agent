@@ -1,0 +1,9 @@
+{
+  "id": "task-003",
+  "title": "Build frontend",
+  "status": "completed",
+  "blockedBy": [],
+  "owner": "alice",
+  "worktree": "",
+  "createdAt": "2026-03-30T16:37:29.259Z"
+}

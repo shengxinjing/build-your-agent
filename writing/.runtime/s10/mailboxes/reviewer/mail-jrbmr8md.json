@@ -1,0 +1,11 @@
+{
+  "id": "mail-jrbmr8md",
+  "createdAt": "2026-03-30T16:37:29.215Z",
+  "kind": "request",
+  "request_id": "req-3asp1dqc",
+  "task_id": "task-102",
+  "from": "lead",
+  "to": "reviewer",
+  "status": "open",
+  "body": "Need testing guidance."
+}

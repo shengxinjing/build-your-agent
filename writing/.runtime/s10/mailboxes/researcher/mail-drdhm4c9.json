@@ -1,0 +1,11 @@
+{
+  "id": "mail-drdhm4c9",
+  "createdAt": "2026-03-30T16:37:29.214Z",
+  "kind": "request",
+  "request_id": "req-ios7eewi",
+  "task_id": "task-101",
+  "from": "lead",
+  "to": "researcher",
+  "status": "open",
+  "body": "Need architecture guidance."
+}

@@ -1,0 +1,3 @@
+{"event":"worktree.create","taskId":"task-001","name":"auth-refactor"}
+{"event":"worktree.create","taskId":"task-002","name":"ui-login"}
+{"event":"worktree.remove","taskId":"task-001","name":"auth-refactor"}

@@ -1,0 +1,24 @@
+[
+  {
+    "id": "mail-9jty5oee",
+    "createdAt": "2026-03-30T16:37:29.215Z",
+    "kind": "response",
+    "request_id": "req-ios7eewi",
+    "task_id": "task-101",
+    "from": "researcher",
+    "to": "lead",
+    "status": "done",
+    "body": "Use small tools and clear task boundaries."
+  },
+  {
+    "id": "mail-k098vck3",
+    "createdAt": "2026-03-30T16:37:29.215Z",
+    "kind": "response",
+    "request_id": "req-3asp1dqc",
+    "task_id": "task-102",
+    "from": "reviewer",
+    "to": "lead",
+    "status": "done",
+    "body": "Use tests and protocol validation to catch drift early."
+  }
+]

@@ -8,7 +8,7 @@ A bilingual (English/Chinese) interactive tutorial site — "Build Your Own Code
 
 ## Commands
 
-All commands run from the `web/` directory:
+All commands run from the project root:
 
 ```bash
 npm run dev          # Start Next.js dev server
@@ -20,7 +20,7 @@ npm run prod:watch   # File watcher that rebuilds + restarts on changes
 
 ### Tests
 
-Uses Node.js built-in test runner (no Jest/Vitest). Run from `web/`:
+Uses Node.js built-in test runner (no Jest/Vitest):
 
 ```bash
 npx tsx --test lib/**/*.test.ts       # Run all tests
@@ -53,5 +53,5 @@ The tutorial at `/build-your-agent` has three layers:
 ### Code Style
 
 - Prettier: no semicolons, trailing commas. MDX/MD files use 42-char print width.
-- Path alias: `@/*` maps to `web/` root (e.g., `@/lib/utils`, `@/components/`).
+- Path alias: `@/*` maps to project root (e.g., `@/lib/utils`, `@/components/`).
 - Cross-origin headers configured in `next.config.mjs` for WebContainer API (COEP/COOP).
