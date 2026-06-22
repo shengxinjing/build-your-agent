@@ -1,1 +1,0 @@
-The agent kept working while tests ran.
