@@ -43,3 +43,7 @@ next-env.d.ts
 .tasks
 .obsidian
 .memory
+.transcripts
+.task_outputs
+.scheduled_tasks.json
+.mailboxes
