@@ -4,7 +4,7 @@ import { runBash } from "./helper.js";
 import { agentLoop } from "./s01-agent-loop.js";
 
 // 模型先让跑一条 bash，拿到结果后再给最终答案 —— 验证整个循环闭环。
-test("s01 agentLoop 执行工具后给出最终答案", async () => {
+test("s01-agent-loop agentLoop 执行工具后给出最终答案", async () => {
   await withFakeLlm(
     [
       {
@@ -33,7 +33,7 @@ test("s01 agentLoop 执行工具后给出最终答案", async () => {
 });
 
 // 模型直接回答、不调工具 —— 循环应立即返回。
-test("s01 agentLoop 无工具调用时直接返回", async () => {
+test("s01-agent-loop agentLoop 无工具调用时直接返回", async () => {
   await withFakeLlm(
     [{ message: { role: "assistant", content: "just text" }, finish_reason: "stop" }],
     async () => {

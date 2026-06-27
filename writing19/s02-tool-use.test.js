@@ -19,7 +19,7 @@ function toolReply(id, name, args) {
 
 // 模型连续用 write_file → edit_file → read_file 三个工具：验证 loop 靠 handlers 表分发，
 // 新增工具完全不需要改 loop。
-test("s02 agentLoop 依次分发多个工具", async () => {
+test("s02-tool-use agentLoop 依次分发多个工具", async () => {
   const tmp = "tmp-s02.txt";
   try {
     await withFakeLlm(

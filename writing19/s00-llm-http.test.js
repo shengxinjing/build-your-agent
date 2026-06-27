@@ -3,8 +3,8 @@ import { withFakeLlm } from "./fake-llm.js";
 import { ask } from "./s00-llm-http.js";
 import { callLlm, llmProviderConfigs } from "./helper.js";
 
-// s00 应把模型回复的文本原样返回。
-test("s00 ask 返回模型的回答", async () => {
+// s00-llm-http 应把模型回复的文本原样返回。
+test("s00-llm-http ask 返回模型的回答", async () => {
   await withFakeLlm(
     [{ message: { role: "assistant", content: "hello world" }, finish_reason: "stop" }],
     async () => {
@@ -15,7 +15,7 @@ test("s00 ask 返回模型的回答", async () => {
 });
 
 // 切换 provider 时，请求里的 model 应跟着切到对应 provider 的默认模型。
-test("s00 callLlm 按 provider 切换模型", async () => {
+test("s00-llm-http callLlm 按 provider 切换模型", async () => {
   await withFakeLlm(
     [
       { message: { role: "assistant", content: "a" }, finish_reason: "stop" },
