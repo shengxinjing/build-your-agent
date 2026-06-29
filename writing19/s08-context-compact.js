@@ -15,7 +15,7 @@ import { parseFrontmatter } from "./utils.js";
 
 // s08：上下文一定会满 —— 在每轮调用模型前压缩历史，腾出空间。
 // s08: context always fills up — compact history before each model call to make room.
-// 四层管线，便宜的先跑、贵的后跑：L3 大结果落盘 → L1 裁中间 → L2 旧结果占位 → L4 LLM 全量摘要；
+// 四层管线，简单规则先跑、LLM 摘要后跑：L3 大结果写入文件 → L1 裁中间 → L2 旧结果缩成一句说明 → L4 LLM 全量摘要；
 // 真到 API 拒绝（prompt_too_long）再用更激进的 reactiveCompact 兜底。
 // Four layers, cheap first: L3 persist big results → L1 snip middle → L2 placeholder old results → L4 LLM summary.
 
@@ -50,8 +50,8 @@ function loadSkill({ name }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  s08 新增：四层压缩管线（便宜的先跑，贵的后跑）
-//  NEW in s08: four-layer compaction pipeline (cheap first, expensive last)
+//  s08 新增：四层压缩流程（简单规则先跑，LLM 摘要后跑）
+//  NEW in s08: four-layer compaction flow (simple rules first, LLM summary last)
 // ═══════════════════════════════════════════════════════════
 
 const TRANSCRIPT_DIR = path.join(process.cwd(), ".transcripts");
@@ -59,7 +59,7 @@ const TOOL_RESULTS_DIR = path.join(process.cwd(), ".task_outputs", "tool-results
 
 const CONTEXT_LIMIT = 12000; // 教程阈值故意调低，方便在命令行里触发 compact
 const KEEP_RECENT = 3; // micro 压缩保留最近几条工具结果的全文
-const PERSIST_THRESHOLD = 30000; // 单条工具结果超过它才值得落盘
+const PERSIST_THRESHOLD = 30000; // 单条工具结果超过它才写入文件保存
 const MAX_REACTIVE_RETRIES = 1;
 
 // 粗略估算上下文大小（教程版用 JSON 字符数，不引入 tokenizer）。
@@ -77,7 +77,7 @@ function apply(messages, next) {
   return messages;
 }
 
-// L1: snipCompact —— 消息太多时裁掉中间，保留头 3 + 尾 N，且不拆开"工具调用 ↔ 它的结果"。
+// L1: snipCompact —— 消息太多时省略中间，保留头 3 + 尾 N，且不拆开"工具调用 ↔ 它的结果"。
 // Trim the middle when there are too many messages; keep head 3 + tail N, never orphaning a tool result.
 export function snipCompact(messages, maxMessages = 50) {
   if (messages.length <= maxMessages) return messages;
@@ -93,7 +93,7 @@ export function snipCompact(messages, maxMessages = 50) {
   ];
 }
 
-// L2: microCompact —— 只保留最近 KEEP_RECENT 条工具结果的全文，更旧的换成一行占位符。
+// L2: microCompact —— 只保留最近 KEEP_RECENT 条工具结果的全文，更旧的换成一行简短说明。
 // Keep only the most recent KEEP_RECENT tool results in full; replace older ones with a one-liner.
 export function microCompact(messages) {
   const toolMsgs = messages.filter(isToolResult);
@@ -104,7 +104,7 @@ export function microCompact(messages) {
   return messages;
 }
 
-// L3: toolResultBudget —— 最近一批工具结果总量超预算时，从最大的开始落盘，上下文里只留引用。
+// L3: toolResultBudget —— 最近一批工具结果总量太大时，从最大的开始写入文件，上下文里只留路径和预览。
 // When the latest batch of tool results exceeds the budget, persist the largest to disk, keep a reference.
 function persistLargeOutput(id, output) {
   if (output.length <= PERSIST_THRESHOLD) return output;
@@ -330,8 +330,8 @@ async function permissionHook(name, args, confirm) {
 
 registerHook("PreToolUse", permissionHook);
 
-// ── agent loop：s08 在每轮调用模型前跑压缩管线；compact 工具单独处理。──
-// s08 runs the compaction pipeline before each model call; the compact tool is handled specially.
+// ── agent loop：s08 在每轮调用模型前跑压缩流程；compact 工具单独处理。──
+// s08 runs the compaction flow before each model call; the compact tool is handled specially.
 export async function agentLoop(messages, confirm) {
   let roundsSinceTodo = 0;
   let reactiveRetries = 0;
@@ -341,15 +341,18 @@ export async function agentLoop(messages, confirm) {
       roundsSinceTodo = 0;
     }
 
-    // s08：三层廉价预处理（0 次 API），顺序固定 budget → snip → micro。
-    // L3 先控预算：超大的存储在.task_outputs文件夹持久化，只在上下文里留下文件路径和预览。
+    // s08：三层简单预处理（0 次 API），顺序固定 budget → snip → micro。
+    // L3 先控制大小：超大的工具输出写入 .task_outputs 文件夹，只在上下文里留下文件路径和预览。
     apply(messages, toolResultBudget(messages));
-    // L1 再裁历史：消息太多时裁掉中间旧消息，保留开头和最近上下文。
+    // L1 再缩短历史：消息太多时省略中间较旧的消息，保留开头和最近上下文。
     apply(messages, snipCompact(messages));
-    // L2 最后微压缩：旧工具结果换成占位符，只保留最近几条工具结果全文。
+    // L2 最后精简旧结果：较早的工具结果换成一句说明，只保留最近几条工具结果全文。
     apply(messages, microCompact(messages));
     // 还不够小？再花一次 API 让 LLM 全量摘要。
-    if (estimateSize(messages) > CONTEXT_LIMIT) apply(messages, await compactHistory(messages));
+    if (estimateSize(messages) > CONTEXT_LIMIT) {
+      console.log("[auto compact] compactHistory");
+      apply(messages, await compactHistory(messages));
+    }
 
     let message;
     try {
@@ -358,6 +361,7 @@ export async function agentLoop(messages, confirm) {
     } catch (error) {
       // 应急：上下文涨得比压缩还快，API 直接拒绝 → reactiveCompact 后重试一次。
       if (reactiveRetries < MAX_REACTIVE_RETRIES && isPromptTooLong(error)) {
+        console.log("[reactive compact] reactiveCompact");
         apply(messages, await reactiveCompact(messages));
         reactiveRetries += 1;
         continue;
@@ -378,6 +382,7 @@ export async function agentLoop(messages, confirm) {
 
       // s08：compact 工具替换整段历史 → 丢弃本批其余工具，用压缩后的上下文重开一轮。
       if (name === "compact") {
+        console.log("[manual compact] compactHistory");
         apply(messages, await compactHistory(messages));
         compacted = true;
         break;

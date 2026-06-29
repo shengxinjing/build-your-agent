@@ -25,6 +25,17 @@ function toolReply(id, name, args) {
 }
 const final = (content) => ({ message: { role: "assistant", content }, finish_reason: "stop" });
 
+async function captureLogs(fn) {
+  const logs = [];
+  const oldLog = console.log;
+  console.log = (...args) => logs.push(args.join(" "));
+  try {
+    return { value: await fn(), logs };
+  } finally {
+    console.log = oldLog;
+  }
+}
+
 // 清理压缩管线写到磁盘的产物（transcript / 落盘的大结果）。
 afterAll(() => {
   for (const dir of [".transcripts", ".task_outputs"]) {
@@ -101,25 +112,31 @@ test("reactiveCompact 摘要旧历史并保留尾部", async () => {
 // 循环里：模型主动调用 compact → 触发 compactHistory，用压缩后的上下文继续。
 test("compact 工具触发压缩后继续", async () => {
   const messages = [{ role: "user", content: "do work then compact" }];
-  const text = await withFakeLlm(
-    [
-      toolReply("c1", "compact", { focus: "earlier work" }), // 模型请求压缩
-      final("SUMMARY of earlier work"), // compactHistory 的摘要调用
-      final("all done after compaction"), // 压缩后模型收尾
-    ],
-    () => agentLoop(messages, async () => "y"),
+  const { value: text, logs } = await captureLogs(() =>
+    withFakeLlm(
+      [
+        toolReply("c1", "compact", { focus: "earlier work" }), // 模型请求压缩
+        final("SUMMARY of earlier work"), // compactHistory 的摘要调用
+        final("all done after compaction"), // 压缩后模型收尾
+      ],
+      () => agentLoop(messages, async () => "y"),
+    ),
   );
   expect(text).toBe("all done after compaction");
+  expect(logs).toContain("[manual compact] compactHistory");
   expect(messages.some((m) => String(m.content).includes("[Compacted]"))).toBe(true);
 });
 
 // 循环里：估算大小超阈值 → 调模型前自动压缩。
 test("超过阈值在调用模型前自动压缩", async () => {
   const messages = [{ role: "user", content: "x".repeat(60000) }];
-  const text = await withFakeLlm(
-    [final("AUTO SUMMARY"), final("answer after auto compact")],
-    () => agentLoop(messages, async () => "y"),
+  const { value: text, logs } = await captureLogs(() =>
+    withFakeLlm(
+      [final("AUTO SUMMARY"), final("answer after auto compact")],
+      () => agentLoop(messages, async () => "y"),
+    ),
   );
+  expect(logs).toContain("[auto compact] compactHistory");
   expect(estimateSize(messages)).toBeLessThan(12000); // 压缩后低于教程阈值
   expect(messages.some((m) => String(m.content).includes("[Compacted]"))).toBe(true);
   expect(text).toBe("answer after auto compact");
