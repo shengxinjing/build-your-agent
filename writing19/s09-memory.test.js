@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withFakeLlm } from "./fake-llm.js";
+import { parseFrontmatter } from "./helper.js";
 import {
   agentLoop,
   setMemoryDir,
@@ -16,6 +17,13 @@ import {
 } from "./s09-memory.js";
 
 const final = (content) => ({ message: { role: "assistant", content }, finish_reason: "stop" });
+
+// frontmatter 只是通用 Markdown 解析，放在 helper.js，s09 只复用它。
+test("parseFrontmatter 保留正文里的分隔符", () => {
+  const { meta, body } = parseFrontmatter("---\nname: demo\n---\n\nbefore\n---\nafter");
+  expect(meta.name).toBe("demo");
+  expect(body).toBe("before\n---\nafter");
+});
 
 // 每个测试用一个临时 .memory 目录，结束后还原并清理（隔离、可重复）。
 function withMemoryDir(fn) {
