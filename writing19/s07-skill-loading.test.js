@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withFakeLlm } from "./fake-llm.js";
-import { parseFrontmatter } from "./utils.js";
+import { parseFrontmatter } from "./helper.js";
 import { agentLoop, scanSkills, skillRegistry } from "./s07-skill-loading.js";
 
 function toolReply(id, name, args) {

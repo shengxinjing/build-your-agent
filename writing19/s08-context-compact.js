@@ -10,8 +10,8 @@ import {
   tool,
   runChatCli,
   isMainModule,
+  parseFrontmatter,
 } from "./helper.js";
-import { parseFrontmatter } from "./utils.js";
 
 // s08：上下文一定会满 —— 在每轮调用模型前压缩历史，腾出空间。
 // s08: context always fills up — compact history before each model call to make room.

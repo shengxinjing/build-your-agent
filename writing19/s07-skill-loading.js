@@ -10,8 +10,8 @@ import {
   tool,
   runChatCli,
   isMainModule,
+  parseFrontmatter,
 } from "./helper.js";
-import { parseFrontmatter } from "./utils.js";
 
 // s07：技能按需加载 —— 用到的时候才花 token。
 // s07: load skills on demand — pay tokens only when used.
