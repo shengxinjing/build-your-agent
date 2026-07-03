@@ -20,6 +20,7 @@ import { focus } from "./focus"
 import { callout } from "../components/annotations/callout"
 import { ThemedPre } from "../components/themed-pre"
 import { CodeStage } from "./code-stage"
+import { LlmSettingsPanel } from "./llm-settings-panel"
 import { SiteHeader } from "@/components/site-header"
 import { HomeHero } from "@/components/hero"
 import type { Locale } from "@/lib/i18n"
@@ -113,6 +114,7 @@ export async function BuildYourAgentArticlePage({
         <div className="journal-prose article-summary">
           {intro.children}
         </div>
+        <LlmSettingsPanel locale={locale} />
       </div>
       <SelectionProvider className="scrolly-grid">
         <div className="scrolly-copy journal-prose">

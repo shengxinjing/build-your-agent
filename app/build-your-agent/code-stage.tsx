@@ -10,8 +10,13 @@ import {
 import { useSelectedIndex } from "codehike/utils/selection"
 import { CopyButton } from "./button"
 import { LiveDemo } from "./livedemo"
+import { useLlmSettings } from "./use-llm-settings"
 import type { Locale } from "@/lib/i18n"
 import { getNextActiveFileName } from "@/lib/tutorial-files"
+import {
+  injectLlmSettingsIntoHelper,
+  localizeCodeComments,
+} from "@/lib/build-your-agent-llm"
 
 type CodeStageFile = {
   copyText: string
@@ -38,9 +43,44 @@ export function CodeStage({
   steps: CodeStageStep[]
 }) {
   const [selectedIndex] = useSelectedIndex()
+  const {
+    apiToken,
+    llmProvider,
+  } = useLlmSettings()
   const scrollRef = useRef<HTMLDivElement>(null)
   const previousSelectedIndexRef = useRef(selectedIndex)
-  const currentStep = steps[selectedIndex] || steps[0]
+  const resolvedSteps = useMemo(
+    () =>
+      steps.map((step) => ({
+        ...step,
+        files: step.files.map((file) => {
+          if (file.fileName !== "helper.js") {
+            return file
+          }
+
+          const localizedCode = localizeCodeComments(
+            file.runtimeCode,
+            locale,
+          )
+          const code = injectLlmSettingsIntoHelper(
+            localizedCode,
+            {
+              apiToken,
+              llmProvider,
+            },
+          )
+
+          return {
+            ...file,
+            copyText: code,
+            runtimeCode: code,
+          }
+        }),
+      })),
+    [apiToken, llmProvider, locale, steps],
+  )
+  const currentStep =
+    resolvedSteps[selectedIndex] || resolvedSteps[0]
   const currentAnimatedRenders =
     animatedRenders[selectedIndex] ||
     animatedRenders[0] ||
@@ -92,7 +132,11 @@ export function CodeStage({
   const activeFile =
     currentStep?.files[resolvedIndex] || null
   const activeRender =
-    renderMode === "static"
+    activeFile?.fileName === "helper.js"
+      ? (
+        <DynamicCodeBlock code={activeFile.copyText} />
+      )
+      : renderMode === "static"
       ? currentStaticRenders[resolvedIndex] || null
       : currentAnimatedRenders[resolvedIndex] || null
 
@@ -164,5 +208,17 @@ export function CodeStage({
         </div>
       </div>
     </div>
+  )
+}
+
+function DynamicCodeBlock({
+  code,
+}: {
+  code: string
+}) {
+  return (
+    <pre className="overflow-x-auto bg-transparent px-6 pt-10 text-[13px] leading-6 text-slate-800 dark:text-[#ddd6cf]">
+      <code>{code}</code>
+    </pre>
   )
 }
