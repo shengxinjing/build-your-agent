@@ -46,11 +46,12 @@ test("s03-permission 风险操作被用户拒绝", async () => {
 
 // 风险操作 + 用户同意 → 真正执行（不再是 denied）。
 test("s03-permission 风险操作经用户同意后执行", async () => {
-  const messages = [{ role: "user", content: "看 rm 帮助" }];
+  const messages = [{ role: "user", content: "执行一个需要确认的命令" }];
   await withFakeLlm(
-    [toolReply("c1", "bash", { command: "rm --help" }), final("好的")],
+    [toolReply("c1", "bash", { command: "echo rm approved" }), final("好的")],
     () => agentLoop(messages, async () => "y"),
   );
   const toolMsg = messages.find((m) => m.role === "tool");
   expect(toolMsg.content).not.toMatch(/Permission denied/i);
+  expect(toolMsg.content).toContain("rm approved");
 });

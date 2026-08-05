@@ -3,13 +3,14 @@
   "version": "0.1.1",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:clean": "rm -rf .next && next dev",
+    "dev": "pnpm run generate:build-your-agent && next dev",
+    "dev:clean": "rm -rf .next && pnpm run generate:build-your-agent && next dev",
+    "generate:build-your-agent": "node scripts/generate-build-your-agent-content.mjs",
     "prod:watch": "node scripts/prod-watch.mjs",
-    "build": "next build",
+    "build": "pnpm run generate:build-your-agent && next build",
     "start": "next start",
     "lint": "next lint",
-    "test:writing19": "vitest run writing19"
+    "test": "pnpm vitest run code-agent-course/"
   },
   "dependencies": {
     "@mdx-js/loader": "^3.1.0",
@@ -25,6 +26,7 @@
     "next": "15.1.9",
     "react": "19.0.0",
     "react-dom": "19.0.0",
+    "remark-gfm": "^4.0.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {

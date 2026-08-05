@@ -13,10 +13,15 @@ export type TutorialDisplayFile = {
 }
 
 export function parseCodeMeta(meta: string, lang: string) {
-  const fromMeta = meta
+  const tokens = meta
     .split(/\s+/)
     .map((token) => token.trim())
+
+  const fromMeta = tokens
     .find((token) => /\.[a-z0-9]+$/i.test(token))
+  const range = tokens
+    .find((token) => token.startsWith("range="))
+    ?.replace(/^range=/, "")
 
   return {
     fileName: fromMeta
@@ -26,6 +31,7 @@ export function parseCodeMeta(meta: string, lang: string) {
       fromMeta || getFallbackFileName(lang),
       lang,
     ),
+    range,
   }
 }
 

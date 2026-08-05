@@ -1,4 +1,9 @@
-import { callLlm, runBash, runChatCli, isMainModule } from "./helper.js";
+import {
+  callLlm,
+  runBash,
+  runChatCli,
+  isMainModule,
+} from "./helper.js";
 
 // s01：在 s00 基础上加“工具调用”，形成最小 agent loop。
 // s01: add tool calling on top of s00 to form a minimal agent loop.

@@ -1,5 +1,8 @@
-import { callLlm, runChatCli, isMainModule } from "./helper.js";
-
+import {
+  callLlm,
+  runChatCli,
+  isMainModule,
+} from "./helper.js";
 // s00：最小的“调用大模型”示例 —— 一个 HTTP 请求换一句回答。
 // s00: the smallest "call an LLM" example — one HTTP request, one reply.
 

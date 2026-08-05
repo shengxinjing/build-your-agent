@@ -1,5 +1,6 @@
 import { remarkCodeHike, recmaCodeHike } from "codehike/mdx"
 import createMDX from "@next/mdx"
+import remarkGfm from "remark-gfm"
 
 const crossOriginHeaders = [
   {
@@ -44,7 +45,7 @@ const chConfig = {
 const withMDX = createMDX({
   extension: /\.mdx?$/,
   options: {
-    remarkPlugins: [[remarkCodeHike, chConfig]],
+    remarkPlugins: [remarkGfm, [remarkCodeHike, chConfig]],
     recmaPlugins: [[recmaCodeHike, chConfig]],
     jsx: true,
   },

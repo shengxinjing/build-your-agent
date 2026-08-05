@@ -1,4 +1,3 @@
-import Link from "next/link"
 import {
   formatPostDate,
   type PostSummary,
@@ -19,7 +18,7 @@ export function PostList({
     <div className="post-list">
       {posts.map((post) => (
         <article key={post.slug} className="post-list__item">
-          <Link
+          <a
             href={`/${locale}/${post.slug}`}
             className="post-list__link"
           >
@@ -36,7 +35,7 @@ export function PostList({
             {/* <span className="post-list__arrow">
               Read
             </span> */}
-          </Link>
+          </a>
         </article>
       ))}
     </div>

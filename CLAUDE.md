@@ -11,20 +11,20 @@ A bilingual (English/Chinese) interactive tutorial site — "Build Your Own Code
 All commands run from the project root:
 
 ```bash
-npm run dev          # Start Next.js dev server
-npm run dev:clean    # Dev with .next/ cache cleared
-npm run build        # Production build
-npm run lint         # ESLint (next/core-web-vitals)
-npm run prod:watch   # File watcher that rebuilds + restarts on changes
+pnpm dev          # Generate course content and start Next.js
+pnpm dev:clean    # Clear .next, regenerate, and start Next.js
+pnpm build        # Generate course content and build for production
+pnpm lint         # ESLint (next/core-web-vitals)
+pnpm prod:watch   # File watcher that rebuilds and restarts on changes
 ```
 
 ### Tests
 
-Uses Node.js built-in test runner (no Jest/Vitest):
+Course chapters use Vitest; application utilities use Node.js's built-in test runner:
 
 ```bash
-npx tsx --test lib/**/*.test.ts       # Run all tests
-npx tsx --test lib/tutorial-files.test.ts  # Run a single test file
+pnpm test
+node --test lib/*.test.ts scripts/*.test.mjs
 ```
 
 ## Architecture
@@ -38,9 +38,9 @@ npx tsx --test lib/tutorial-files.test.ts  # Run a single test file
 
 The tutorial at `/build-your-agent` has three layers:
 
-1. **MDX Content** (`content.en.mdx`, `content.cn.mdx`) — prose with Code Hike annotations (mark, focus, callout). Parsed server-side via `@mdx-js/loader` + Code Hike's `remarkPlugins`/`recmaPlugins` in `next.config.mjs`.
+1. **Generated MDX** (`content.generated.cn.mdx`) — built from `code-agent-course/s00-s18` by `scripts/generate-build-your-agent-content.mjs`. Parsed server-side via `@mdx-js/loader` and Code Hike plugins in `next.config.mjs`.
 
-2. **Code Stage** (`code-stage.tsx`, client) — displays tabbed code panels synced to scroll position via Code Hike's `useSelectedIndex`. Files come from `snippets/` directory (01-agent.js through 07-agent.js, utils.js). `lib/tutorial-files.ts` handles parsing code block metadata, line-range slicing, and merging display files. `lib/tutorial-files-server.ts` loads snippet files from disk.
+2. **Code Stage** (`code-stage.tsx`, client) — displays chapter snapshots synced to scroll position via Code Hike's `useSelectedIndex`. `lib/tutorial-files.ts` parses code metadata and `lib/tutorial-files-server.ts` loads the generated shared `helper.js`.
 
 3. **Live Demo** (`livedemo.tsx`, client) — WebContainer sandbox with Monaco editor (`ide-editor.tsx`) and xterm terminal. WebContainer instance is cached on `window` to survive re-renders.
 

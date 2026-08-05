@@ -15,6 +15,7 @@ test("parseCodeMeta extracts file names from code meta", () => {
     {
       fileName: "agent.js",
       lang: "js",
+      range: undefined,
     },
   )
 
@@ -23,6 +24,7 @@ test("parseCodeMeta extracts file names from code meta", () => {
     {
       fileName: "utils.ts",
       lang: "ts",
+      range: undefined,
     },
   )
 })
@@ -31,6 +33,15 @@ test("parseCodeMeta falls back to a default file name", () => {
   assert.deepEqual(parseCodeMeta("", "js"), {
     fileName: "snippet.js",
     lang: "js",
+    range: undefined,
+  })
+})
+
+test("parseCodeMeta supports display-only line ranges", () => {
+  assert.deepEqual(parseCodeMeta("! agent.js range=1:220", "js"), {
+    fileName: "agent.js",
+    lang: "js",
+    range: "1:220",
   })
 })
 
