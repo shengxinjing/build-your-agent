@@ -41,24 +41,24 @@ export function LlmSettingsPanel({
   const text = copy[locale]
 
   return (
-    <section className="mt-8 rounded-[28px] border border-slate-200/70 bg-white/85 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.08)] backdrop-blur dark:border-white/10 dark:bg-[#11151d]/80 dark:shadow-[0_24px_60px_rgba(0,0,0,0.35)]">
-      <div className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+    <section className="mt-8 rounded-[28px] border border-[var(--line)] bg-[var(--surface-elevated)] p-5 text-[var(--text)] shadow-[0_24px_60px_rgba(67,48,36,0.08)] backdrop-blur dark:shadow-[0_24px_60px_rgba(0,0,0,0.28)]">
+      <div className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
         LLM
       </div>
-      <h2 className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
+      <h2 className="mt-2 text-2xl font-semibold text-[var(--text)]">
         {text.title}
       </h2>
-      <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
+      <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
         {text.description}
       </p>
 
       <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
         <label className="block">
-          <span className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">
+          <span className="mb-2 block text-sm font-medium text-[var(--text)]">
             {text.provider}
           </span>
           <select
-            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 dark:border-white/10 dark:bg-[#0d1117] dark:text-slate-100 dark:focus:border-slate-500"
+            className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--accent)]"
             onChange={(event) =>
               setLlmProvider(
                 event.target.value as LlmProvider,
@@ -75,13 +75,13 @@ export function LlmSettingsPanel({
         </label>
 
         <label className="block">
-          <span className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">
+          <span className="mb-2 block text-sm font-medium text-[var(--text)]">
             {text.token}
           </span>
           <input
             autoCapitalize="off"
             autoCorrect="off"
-            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 dark:border-white/10 dark:bg-[#0d1117] dark:text-slate-100 dark:focus:border-slate-500"
+            className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text)] outline-none transition placeholder:text-[var(--muted)] focus:border-[var(--accent)]"
             onChange={(event) =>
               setApiToken(event.target.value)
             }

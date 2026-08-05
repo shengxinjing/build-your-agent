@@ -5,8 +5,8 @@ import type {
   WebContainer,
   WebContainerProcess,
 } from "@webcontainer/api"
-import { FitAddon } from "@xterm/addon-fit"
-import { Terminal } from "@xterm/xterm"
+import type { FitAddon } from "@xterm/addon-fit"
+import type { Terminal } from "@xterm/xterm"
 import {
   ChevronRight,
   File,
@@ -16,6 +16,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react"
+import dynamic from "next/dynamic"
 import {
   useCallback,
   useEffect,
@@ -23,9 +24,20 @@ import {
   useRef,
   useState,
 } from "react"
-import { IdeEditor } from "./ide-editor"
 import { useDomThemeMode } from "@/components/theme-provider"
 import type { Locale } from "@/lib/i18n"
+
+const IdeEditor = dynamic(
+  () => import("./ide-editor").then((module) => module.IdeEditor),
+  {
+    loading: () => (
+      <div className="live-demo-panel flex h-full items-center justify-center rounded-[28px] text-sm">
+        Loading editor...
+      </div>
+    ),
+    ssr: false,
+  },
+)
 
 declare global {
   var __scrollycodingWebContainerPromise:
@@ -247,6 +259,10 @@ export function LiveDemo({
       )
     }
 
+    const [{ FitAddon }, { Terminal }] = await Promise.all([
+      import("@xterm/addon-fit"),
+      import("@xterm/xterm"),
+    ])
     const fitAddon = new FitAddon()
     const terminal = new Terminal({
       convertEol: true,
@@ -891,8 +907,8 @@ function QuickActionCard({
 function getTerminalTheme(theme: "light" | "dark") {
   if (theme === "dark") {
     return {
-      background: "#0d0f14",
-      black: "#0d0f14",
+      background: "#151413",
+      black: "#151413",
       blue: "#7aa2f7",
       brightBlack: "#6b7280",
       brightBlue: "#93c5fd",
@@ -900,11 +916,11 @@ function getTerminalTheme(theme: "light" | "dark") {
       brightGreen: "#6ee7b7",
       brightMagenta: "#f0abfc",
       brightRed: "#fca5a5",
-      brightWhite: "#f8fafc",
+      brightWhite: "#eee6dd",
       brightYellow: "#fde68a",
       cursor: "#d68f6f",
       cyan: "#22d3ee",
-      foreground: "#e7ddd2",
+      foreground: "#d8cfc6",
       green: "#34d399",
       magenta: "#e879f9",
       red: "#f87171",
@@ -916,14 +932,14 @@ function getTerminalTheme(theme: "light" | "dark") {
       scrollbarSliderHoverBackground:
         "rgba(148, 163, 184, 0.22)",
       selectionBackground: "rgba(122, 162, 247, 0.26)",
-      white: "#e7ddd2",
+      white: "#d8cfc6",
       yellow: "#f59e0b",
     }
   }
 
   return {
-    background: "#ffffff",
-    black: "#0f172a",
+    background: "#fbf8f3",
+    black: "#2d2925",
     blue: "#2563eb",
     brightBlack: "#64748b",
     brightBlue: "#2563eb",
@@ -931,11 +947,11 @@ function getTerminalTheme(theme: "light" | "dark") {
     brightGreen: "#16a34a",
     brightMagenta: "#d946ef",
     brightRed: "#ef4444",
-    brightWhite: "#0f172a",
+    brightWhite: "#2d2925",
     brightYellow: "#ca8a04",
-    cursor: "#d946ef",
+    cursor: "#9a5133",
     cyan: "#0891b2",
-    foreground: "#334155",
+    foreground: "#37312c",
     green: "#16a34a",
     magenta: "#d946ef",
     red: "#dc2626",
@@ -947,7 +963,7 @@ function getTerminalTheme(theme: "light" | "dark") {
     scrollbarSliderHoverBackground:
       "rgba(148, 163, 184, 0.22)",
     selectionBackground: "#dbeafe",
-    white: "#334155",
+    white: "#37312c",
     yellow: "#ca8a04",
   }
 }
@@ -1239,4 +1255,3 @@ function getErrorMessage(cause: unknown) {
 
   return "Failed to start the WebContainer shell."
 }
-

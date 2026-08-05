@@ -6,27 +6,21 @@ import type { ReactElement } from "react"
 import path from "node:path"
 import { z } from "zod"
 import {
-  AnnotationHandler,
-  RawCode,
   highlight,
+  type RawCode,
 } from "codehike/code"
 import {
   Selectable,
   SelectionProvider,
 } from "codehike/utils/selection"
-import { tokenTransitions } from "../components/annotations/token-transitions"
-import { mark } from "./mark"
-import { focus } from "./focus"
-import { callout } from "../components/annotations/callout"
-import { ThemedPre } from "../components/themed-pre"
 import { CodeStage } from "./code-stage"
 import { LlmSettingsPanel } from "./llm-settings-panel"
 import { SiteHeader } from "@/components/site-header"
 import { HomeHero } from "@/components/hero"
 import type { Locale } from "@/lib/i18n"
 import {
-  mergeDisplayFiles,
   parseCodeMeta,
+  sliceCodeByRange,
   type TutorialDisplayFile,
 } from "@/lib/tutorial-files"
 import { loadSharedCodeFiles } from "@/lib/tutorial-files-server"
@@ -45,22 +39,6 @@ const ARTICLE_DIR = path.join(
   "app/build-your-agent",
 )
 
-const borderHandler: AnnotationHandler = {
-  name: "border",
-  Block: ({ annotation, children }) => {
-    const borderColor = annotation.query || "red"
-    return <div style={{ border: "1px solid", borderColor }}>{children}</div>
-  },
-}
-
-const bgHandler: AnnotationHandler = {
-  name: "bg",
-  Inline: ({ annotation, children }) => {
-    const background = annotation.query || "#2d26"
-    return <span style={{ background }}>{children}</span>
-  },
-}
-
 export async function BuildYourAgentArticlePage({
   content,
   locale,
@@ -73,34 +51,30 @@ export async function BuildYourAgentArticlePage({
     buildYourAgentSharedFiles,
     ARTICLE_DIR,
   )
+  const preparedSharedFiles = (
+    await Promise.all(sharedFiles.map(prepareStageFile))
+  ).map((file) => ({
+    copyText: file.copyText,
+    fileName: file.fileName,
+    lang: file.lang,
+    meta: file.meta,
+    runtimeCode: file.runtimeCode,
+  }))
   const stageSteps = await Promise.all(
     steps.map(async (step) => {
       const primaryFile = createPrimaryDisplayFile(step.code)
-      const mergedFiles = mergeDisplayFiles(
-        primaryFile,
-        sharedFiles,
-      )
-      const preparedFiles = await Promise.all(
-        mergedFiles.map((file) =>
-          prepareStageFile(file),
-        ),
-      )
+      const preparedFile = await prepareStageFile(primaryFile)
 
       return {
         entryFileName: primaryFile.fileName,
-        files: preparedFiles.map((file) => ({
-          copyText: file.copyText,
-          fileName: file.fileName,
-          lang: file.lang,
-          meta: file.meta,
-          runtimeCode: file.runtimeCode,
-        })),
-        animatedRenders: preparedFiles.map(
-          (file) => file.animatedRender,
-        ),
-        staticRenders: preparedFiles.map(
-          (file) => file.staticRender,
-        ),
+        files: [{
+          copyText: preparedFile.copyText,
+          fileName: preparedFile.fileName,
+          lang: preparedFile.lang,
+          meta: preparedFile.meta,
+          runtimeCode: preparedFile.runtimeCode,
+        }],
+        highlightedCodes: [preparedFile.highlightedCode],
       }
     }),
   )
@@ -135,12 +109,10 @@ export async function BuildYourAgentArticlePage({
             <div className="scrolly-stage__frame">
               <CodeStage
                 locale={locale}
-                animatedRenders={stageSteps.map(
-                  (step) => step.animatedRenders,
+                highlightedCodes={stageSteps.map(
+                  (step) => step.highlightedCodes,
                 )}
-                staticRenders={stageSteps.map(
-                  (step) => step.staticRenders,
-                )}
+                sharedFiles={preparedSharedFiles}
                 steps={stageSteps.map((step) => ({
                   entryFileName: step.entryFileName,
                   files: step.files,
@@ -165,6 +137,17 @@ export async function BuildYourAgentArticlePage({
 async function prepareStageFile(
   file: TutorialDisplayFile,
 ) {
+  if (file.fileName === "helper.js") {
+    return {
+      copyText: file.displayValue,
+      fileName: file.fileName,
+      lang: file.lang,
+      meta: file.meta,
+      highlightedCode: null,
+      runtimeCode: file.runtimeValue,
+    }
+  }
+
   const [light, dark] = await Promise.all([
     highlight(
       {
@@ -190,35 +173,7 @@ async function prepareStageFile(
       fileName: file.fileName,
       lang: dark.lang,
       meta: dark.meta,
-      animatedRender: (
-        <ThemedPre
-          light={light}
-          dark={dark}
-          handlers={[
-            tokenTransitions,
-            mark,
-            focus,
-            borderHandler,
-            bgHandler,
-            callout,
-          ]}
-          className="h-full bg-transparent pt-10"
-        />
-      ),
-      staticRender: (
-        <ThemedPre
-          light={light}
-          dark={dark}
-          handlers={[
-            mark,
-            focus,
-            borderHandler,
-            bgHandler,
-            callout,
-          ]}
-          className="h-full bg-transparent pt-10"
-        />
-      ),
+      highlightedCode: { light, dark },
       runtimeCode: file.runtimeValue,
     }
   )
@@ -231,7 +186,10 @@ function createPrimaryDisplayFile(codeblock: RawCode) {
   )
 
   return {
-    displayValue: codeblock.value,
+    displayValue: sliceCodeByRange(
+      codeblock.value,
+      parsedMeta.range,
+    ),
     fileName: parsedMeta.fileName,
     lang: codeblock.lang,
     meta: codeblock.meta,

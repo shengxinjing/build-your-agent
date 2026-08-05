@@ -1,0 +1,734 @@
+## !intro 从 s00 到 s18：从 HTTP 调用到 Agent Runtime
+
+这份内容由 `code-agent-course/s00-s17` 的 JavaScript 主线和 `s18` 进阶阅读生成。
+
+左侧保留每章最关键的讲解，右侧始终把当前章节代码显示成同一个 `agent.js`，这样 CodeHike 可以在章节之间做逐行切换。点击运行按钮时，WebContainer 会挂载当前 `agent.js` 和公共 `helper.js`。
+
+## !!steps s00：HTTP 调用 —— 先打通模型入口
+
+来源：`s00-llm-http.md`
+
+想象你刚招来一个很聪明的实习生，他脑子很好，但你们还没有建立任何沟通方式。`s00` 做的就是先接通电话：你把问题按固定格式发过去，他把回答按固定格式回给你。
+
+参考仓库从 `s01_agent_loop` 直接开始讲 agent loop。
+
+我们的 JavaScript 版多加一个 `s00`，原因很简单：在进入 agent 之前，先把最基础的一件事讲清楚：
+
+**怎么通过 HTTP 把 `messages` 发给 LLM provider，再拿回模型回复。**
+
+后面的 `s01-s04` 会参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 中的 `s01_agent_loop`、`s02_tool_use`、`s03_permission` 和 `s04_hooks`。
+
+但 `s00` 是 JS 版的前置底座：先不要 agent，不要工具，不要权限，只确认 LLM 可以被调用。
+
+### 问题
+
+所有 agent 最后都要回到一次普通的模型调用。
+
+如果这条链路还没通，后面的 loop、tool、permission、hook 都跑不起来。
+
+所以这一节只解决一个问题：
+
+### 解决方案
+
+把 provider 差异收进配置表，主逻辑只认一个函数：
+
+OpenAI、DeepSeek、Kimi 都是 OpenAI-compatible 的 `/chat/completions` 风格。它们主要差在三处：
+
+| 配置 | 含义 |
+|---|---|
+| `baseUrl` | 请求地址 |
+| `model` | 默认模型名 |
+| `token` | API token |
+
+主流程不关心是哪家，只从 `llmProviderConfigs` 里取当前 provider 的配置。
+
+### 新增函数速览
+
+- `ask(messages)`：本章最小的业务函数，把当前对话交给 `callLlm()`，再取出模型回复文本。
+- `main()`：命令行入口，把 `ask()` 接到 `runChatCli()`，让用户可以在终端里反复输入 prompt。
+- `callLlm(messages)`：在 `helper.js` 里封装 HTTP 调用，负责把 `messages` 发到当前 provider 的 `/chat/completions` 接口。
+- `runChatCli(options)`：在 `helper.js` 里封装命令行交互，负责读取用户输入、维护 messages、打印 assistant 回复。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s00-llm-http.js
+```
+
+## !!steps s01.1：声明 Bash 工具
+
+来源：`s01-agent-loop.md` · s01：Agent Loop —— 一个循环就够了
+
+现在这个聪明新人已经能听懂你说话了，但他还容易“做一步就停下来汇报”。`s01` 要教他的第一条工作习惯是：遇到任务先自己循环推进，把工具结果看完再继续，直到真的完成再汇报。
+
+参考：[shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 中的 `s01_agent_loop`。
+
+参考教程的核心句子是：**一个工具 + 一个循环 = 一个 agent。**
+
+我们的 JS 版延续这个思路：只给模型一个 `bash` 工具，然后写一个 `while (true)`，让模型可以持续行动。
+
+### 问题
+
+普通聊天里，模型只能输出文本。
+
+比如你问：
+
+模型也许会告诉你应该运行：
+
+但它不会真的执行，也看不到执行结果。
+
+你可以手动把命令复制到终端，再把结果粘回对话框。这个“复制、执行、粘贴”的过程，就是人工版 agent 循环。
+
+`s01` 要做的事，就是把这个中间层自动化。
+
+### 解决方案
+
+给模型一个真实工具：`bash`。
+
+Python 原版源码里把整个结构浓缩成了这个模式：
+
+放成完整结构图就是这样：
+
+整个循环只看一个信号：
+
+| 信号 | 含义 | 动作 |
+|---|---|---|
+| 有 `message.tool_calls` | 模型想调用工具 | 执行工具，结果回灌，继续 |
+| 没有 `message.tool_calls` | 模型给最终回答 | 结束循环 |
+
+### 新增函数速览
+
+- `agentLoop(messages)`：本章核心函数，反复执行“调用模型 → 检查 tool_calls → 执行工具 → 回灌工具结果”，直到模型返回普通文本。
+- `runBash(command)`：来自 `helper.js`，执行模型请求的 bash 命令，并把真实 stdout / stderr 作为工具结果返回。
+- `main()`：命令行入口，把用户输入交给 `agentLoop()`，让这个最小 agent 可以在终端里跑起来。
+
+先把普通聊天程序变成 coding agent，并用 `bashTool` 告诉模型：现在有一个名为 `bash` 的函数，它接收一个必填的 `command` 字符串。
+
+本次代码变化：21 行。
+
+```js ! agent.js range=1:220
+import {
+  callLlm,
+// !focus(start)
+  runBash,
+// !focus(end)
+  runChatCli,
+  isMainModule,
+} from "./helper.js";
+// !focus(start)
+
+// !focus(end)
+// s00：最小的“调用大模型”示例 —— 一个 HTTP 请求换一句回答。
+// s00: the smallest "call an LLM" example — one HTTP request, one reply.
+
+// !focus(start)
+const SYSTEM = `You are a coding agent at ${process.cwd()}. Use bash to solve tasks. Act, don't explain.`;
+
+// 一个工具 = 给模型看的 schema（这里只放一个 bash）。
+// A tool = the schema shown to the model (just bash here).
+const bashTool = [{
+  type: "function",
+  function: {
+    name: "bash",
+    description: "Run a shell command.",
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
+  },
+}];
+
+// !focus(end)
+export async function ask(messages) {
+  const choice = await callLlm(messages);
+  return choice.message.content || "";
+}
+
+async function main() {
+  // runChatCli 只管命令行输入输出；真正的 LLM 调用放在 onPrompt 里。
+  await runChatCli({
+    promptLabel: "prompt >> ",
+    onPrompt: ({ messages }) => ask(messages),
+  });
+}
+
+// 只有直接运行才启动命令行；被测试 import 时不会启动。
+// Only start the CLI when run directly; importing (e.g. in tests) won't start it.
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}
+```
+
+## !!steps s01.2：完成 Agent 闭环
+
+来源：`s01-agent-loop.md` · s01：Agent Loop —— 一个循环就够了
+
+把原来只请求一次的 `ask` 改成 `agentLoop`：模型请求工具时执行 Bash，把结果按同一个 `tool_call_id` 放回 `messages`，然后继续下一轮；模型不再请求工具时才返回答案。
+
+本次代码变化：28 行。
+
+```js ! agent.js range=1:220
+import {
+  callLlm,
+  runBash,
+  runChatCli,
+  isMainModule,
+} from "./helper.js";
+
+// s00：最小的“调用大模型”示例 —— 一个 HTTP 请求换一句回答。
+// s00: the smallest "call an LLM" example — one HTTP request, one reply.
+
+const SYSTEM = `You are a coding agent at ${process.cwd()}. Use bash to solve tasks. Act, don't explain.`;
+
+// 一个工具 = 给模型看的 schema（这里只放一个 bash）。
+// A tool = the schema shown to the model (just bash here).
+const bashTool = [{
+  type: "function",
+  function: {
+    name: "bash",
+    description: "Run a shell command.",
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
+  },
+}];
+
+// !focus(start)
+// agent loop：问模型 → 有 tool_calls 就执行并把结果回灌 → 没有就返回答案。
+// The agent loop: ask the model → run any tool_calls and feed results back → else return the answer.
+export async function agentLoop(messages) {
+  while (true) {
+    const choice = await callLlm(messages, { system: SYSTEM, tools: bashTool });
+    const { message } = choice;
+
+    if (!message.tool_calls?.length) {
+      return message.content || "";
+    }
+
+    messages.push(message);
+    for (const call of message.tool_calls) {
+      const { command } = JSON.parse(call.function.arguments || "{}");
+      const output =
+        call.function.name === "bash"
+          ? runBash(command)
+          : `Unknown tool: ${call.function.name}`;
+
+      console.log(`$ ${command}\n${output.slice(0, 500)}`);
+      messages.push({ role: "tool", tool_call_id: call.id, content: output });
+    }
+  }
+// !focus(end)
+}
+
+async function main() {
+  // runChatCli 只管命令行输入输出；真正的 LLM 调用放在 onPrompt 里。
+  await runChatCli({
+    promptLabel: "prompt >> ",
+// !focus(start)
+    onPrompt: ({ messages }) => agentLoop(messages),
+// !focus(end)
+  });
+}
+
+// 只有直接运行才启动命令行；被测试 import 时不会启动。
+// Only start the CLI when run directly; importing (e.g. in tests) won't start it.
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}
+```
+
+## !!steps s01.3：完成 s01 命令行入口
+
+来源：`s01-agent-loop.md` · s01：Agent Loop —— 一个循环就够了
+
+最后更新章节身份和命令行提示，并移除 s00 中只适用于普通问答的说明。到这里，生成的代码与本章真实 JS 文件逐字一致。
+
+本次代码变化：9 行。
+
+```js ! agent.js range=1:220
+import {
+  callLlm,
+  runBash,
+  runChatCli,
+  isMainModule,
+} from "./helper.js";
+
+// !focus(start)
+// s01：在 s00 基础上加“工具调用”，形成最小 agent loop。
+// s01: add tool calling on top of s00 to form a minimal agent loop.
+// !focus(end)
+
+const SYSTEM = `You are a coding agent at ${process.cwd()}. Use bash to solve tasks. Act, don't explain.`;
+
+// 一个工具 = 给模型看的 schema（这里只放一个 bash）。
+// A tool = the schema shown to the model (just bash here).
+const bashTool = [{
+  type: "function",
+  function: {
+    name: "bash",
+    description: "Run a shell command.",
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
+  },
+}];
+
+// agent loop：问模型 → 有 tool_calls 就执行并把结果回灌 → 没有就返回答案。
+// The agent loop: ask the model → run any tool_calls and feed results back → else return the answer.
+export async function agentLoop(messages) {
+  while (true) {
+    const choice = await callLlm(messages, { system: SYSTEM, tools: bashTool });
+    const { message } = choice;
+
+    if (!message.tool_calls?.length) {
+      return message.content || "";
+    }
+
+    messages.push(message);
+    for (const call of message.tool_calls) {
+      const { command } = JSON.parse(call.function.arguments || "{}");
+      const output =
+        call.function.name === "bash"
+          ? runBash(command)
+          : `Unknown tool: ${call.function.name}`;
+
+      console.log(`$ ${command}\n${output.slice(0, 500)}`);
+      messages.push({ role: "tool", tool_call_id: call.id, content: output });
+    }
+  }
+}
+
+async function main() {
+  await runChatCli({
+// !focus(start)
+    promptLabel: "s01 >> ",
+// !focus(end)
+    onPrompt: ({ messages }) => agentLoop(messages),
+  });
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}
+```
+
+## !!steps s02：Tool Use —— 多加一个工具，只加一个 handler
+
+来源：`s02-tool-use.md`
+
+新人会跑命令以后，领导又让他去读文件、写文件、查列表。`s02` 的故事就是给他发一套工具箱：每新增一种工具，只要告诉他“工具叫什么、参数是什么、真正执行时找谁处理”。
+
+参考：[shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 中的 `s02_tool_use`。
+
+参考教程的核心是：**循环不用变复杂，新工具注册进 dispatch map 就行。**
+
+我们的 JS 版沿用同一个设计：`tools` 给模型看，`handlers` 给程序执行。
+
+### 问题
+
+`s01` 只有一个 `bash`。
+
+这当然能做很多事，但模型每次都要把真实意图翻译成 shell：
+
+| 模型真正想做 | 只能通过 bash 表达 |
+|---|---|
+| 读文件 | `cat file` |
+| 写文件 | `echo ... > file` |
+| 改文件 | `sed ...` |
+| 找文件 | `find ...` |
+
+这会浪费 token，也容易让模型拼错命令。
+
+更大的问题是：如果每新增一个工具，都在 loop 里加一段 `if/else`，主循环很快会变乱。
+
+### 解决方案
+
+把工具分成两张表：
+
+新增工具只做两件事：
+
+1. 在 `tools` 里增加 schema。
+2. 在 `handlers` 里增加同名函数。
+
+agent loop 仍然只负责查表分发。
+
+### 新增函数速览
+
+- `agentLoop(messages)`：循环结构基本沿用 s01，但工具执行不再写死判断，而是通过 `handlers` 分发表找到对应实现。
+- `tool(name, description, parameters)`：来自 `helper.js`，用一行代码生成 OpenAI-compatible 的 function tool schema。
+- `readFile()` / `writeFile()` / `editFile()` / `glob()`：来自 `helper.js`，分别提供读文件、写文件、替换文本和查找文件能力。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s02-tool-use.js
+```
+
+## !!steps s03：Permission —— 执行前做权限判断
+
+来源：`s03-permission.md`
+
+新人越来越能干，但也可能一激动就想执行危险操作，比如删除文件或改系统配置。`s03` 就像公司给他配了一道审批门：不是不信任他，而是所有可能造成破坏的动作，都要先过规则和人工确认。
+
+参考：[shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 中的 `s03_permission`。
+
+参考教程的核心是：**安全不能靠相信模型，要靠代码在工具执行前做判断。**
+
+我们的 JS 版也保持这个思路：`s02` 的多工具 loop 不变，只在执行 handler 前插入一个权限门。
+
+### 问题
+
+`s02` 之后，agent 有了 5 个工具。
+
+这让它更能干，也更危险。
+
+比如用户说：
+
+模型可能会生成：
+
+也可能生成：
+
+这两种都和删除有关，但风险不一样。前者应该直接拒绝，后者也许可以执行，但最好先问用户。
+
+### 解决方案
+
+在每次工具执行前，加一道三档权限门：
+
+三档结果：
+
+| 决策 | 含义 | 例子 |
+|---|---|---|
+| `allow` | 直接放行 | `read_file`、`glob`、普通命令 |
+| `deny` | 永远拒绝 | `rm -rf /`、`sudo`、`shutdown` |
+| `ask` | 先问用户 | `rm notes.txt`、`chmod 777` |
+
+这里的目标不是做完美安全沙箱，而是建立 agent runtime 的关键边界：
+
+**模型可以提出行动意图，但执行前必须经过系统判断。**
+
+### 新增函数速览
+
+- `checkPermission(name, args)`：本章新增的权限门，按工具名和参数返回 `allow`、`ask` 或 `deny`。
+- `approved(confirm, reason, name, args)`：当权限结果是 `ask` 时，向用户询问是否允许执行。
+- `agentLoop(messages, confirm)`：在 s02 的循环基础上，执行工具前先经过 `checkPermission()`。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s03-permission.js
+```
+
+## !!steps s04：Hooks —— 挂在循环上，不写进循环里
+
+来源：`s04-hooks.md`
+
+新人开始承担更多流程：干活前要打卡，干活后要记录，收工前要总结。如果每条规矩都写进他的主工作步骤里，流程会乱成一团；`s04` 就是给工作流预留挂钩，让这些规矩挂在固定节点上。
+
+参考：[shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 中的 `s04_hooks`。
+
+参考教程的核心是：**扩展逻辑应该挂在 hook 上，而不是不断写进 agent loop。**
+
+我们的 JS 版延续这个思路：保留 `s03` 的权限能力，但把权限判断变成 `PreToolUse` hook。
+
+### 问题
+
+`s03` 已经能在工具执行前做权限判断。
+
+但如果后面继续加机制，比如：
+
+- 记录每次工具调用
+- 工具执行后检查输出大小
+- 用户输入后注入上下文
+- agent 结束时做统计
+- 后续章节里的 todo、skill、memory、compact
+
+如果这些都写进 `agentLoop()`，主循环很快会变成这样：
+
+循环会越来越难读。
+
+所以 `s04` 要做的事是：**给主循环留插口。**
+
+### 解决方案
+
+定义一组生命周期事件，然后允许外部注册回调。
+
+Python 原版源码里的完整结构图是这样：
+
+主循环只负责在关键时刻触发 hook：
+
+具体要做什么，交给注册进去的 callback。
+
+### 新增函数速览
+
+- `registerHook(event, callback)`：把一个回调挂到指定生命周期事件上。
+- `triggerHooks(event, ...args)`：按顺序执行某个事件上的 hook；如果 hook 返回结果，就可以拦截或改写流程。
+- `permissionHook(name, args, confirm)`：把 s03 的权限判断搬进 `PreToolUse` 生命周期。
+- `logHook()` / `largeOutputHook()` / `summaryHook()` / `contextHook()`：分别演示日志、输出检查、结束统计和用户输入前处理。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s04-hooks.js
+```
+
+## !!steps s05：待办写入
+
+来源：`s05-todo-write.md`
+
+新人接到复杂任务时，最怕脑子里一团线：先做什么、做到哪了、还有什么没做都不清楚。`s05` 教他先写备忘录，把任务拆成可见的 todo，这样执行时不容易跑偏。
+
+### 新增函数速览
+
+- `getTodos()`：读取当前内存里的 todo 列表，方便测试和观察 agent 的计划状态。
+- `runTodoWrite(&#123; todos &#125;)`：`todo_write` 的实际处理函数，把模型给出的 todo 列表保存到 `currentTodos`。
+- `agentLoop(messages, confirm)`：在 s04 的 hook loop 基础上，增加 todo 更新计数和 `&lt;reminder>` 提醒。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s05-todo-write.js
+```
+
+## !!steps s06：Subagent —— 把探索放进干净上下文
+
+来源：`s06-subagent.md`
+
+新人遇到一堆资料要查时，如果所有草稿、试错和中间结论都塞进主汇报里，领导很快看不清主线。`s06` 像是让他临时拉一个助理去单独调研，最后只把摘要带回来。
+
+### 新增函数速览
+
+- `spawnSubagent(description, confirm)`：用一份新的 `messages[]` 启动子代理，让探索性任务在干净上下文里运行。
+- `agentLoop(messages, confirm)`：在 s05 基础上支持异步 handler，所以 `task` 工具可以等待子代理完成后再回灌摘要。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s06-subagent.js
+```
+
+## !!steps s07：Skill Loading —— 知识按需加载
+
+来源：`s07-skill-loading.md`
+
+新人不可能第一天就背完整本公司手册，更不该每次开会都把所有资料搬上桌。`s07` 教他先看目录，需要某项专业知识时再去翻对应手册，这样脑子里只装当下用得上的内容。
+
+### 新增函数速览
+
+- `scanSkills(dir)`：扫描 `skills/` 的直接子目录，读取其中的 `SKILL.md` frontmatter 和正文。
+- `listSkills()`：把已发现的 skill 压成一段简短清单，注入 system prompt 让模型知道有哪些技能。
+- `loadSkill(&#123; name &#125;)`：按名称读取某个 skill 的完整内容，并通过工具结果按需交给模型。
+- `agentLoop(messages, confirm)`：在 s06 基础上多暴露一个 `load_skill` 工具。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s07-skill-loading.js
+```
+
+## !!steps s08：Context Compact —— 给长会话腾空间
+
+来源：`s08-context-compact.md`
+
+新人连续工作几个小时后，桌面会堆满便签、日志和临时资料。`s08` 教他整理桌面：重要结论留下，超长输出保存到文件，旧过程压缩成摘要，让后面的工作还能继续。
+
+### 新增函数速览
+
+- `snipCompact(messages)`：删除中间的旧消息，只保留开头和最近对话。
+- `microCompact(messages)`：压短较早的 tool result，保留“这个工具曾经跑过”的线索。
+- `toolResultBudget(messages)`：当工具输出太大时，把完整内容写入文件，只在上下文里保留文件路径和预览。
+- `compactHistory(messages)`：调用模型总结历史，把长对话压成一条可继续工作的摘要。
+- `reactiveCompact(messages)`：当模型提示上下文过长时，立即触发一次总结式压缩。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s08-context-compact.js
+```
+
+## !!steps s09：Memory —— 只保存下次还要用的信息
+
+来源：`s09-memory.md`
+
+新人工作久了会遇到两类信息：一类是当前任务里的临时过程，比如命令输出、探索路径、一次性结论；另一类是以后还会反复用到的事实，比如用户偏好、项目约定、长期规则。
+
+`s08` 的 compact 负责让当前会话继续跑下去，`s09` 的 memory 负责把“下次还要用”的信息保存下来。
+
+### 新增函数速览
+
+- `writeMemoryFile(name, type, description, body)`：把一条长期记忆保存成 Markdown 文件。
+- `listMemoryFiles()` / `readMemoryIndex()`：读取已有记忆和索引，给后续选择与注入使用。
+- `selectRelevantMemories(messages, maxItems)`：让模型从记忆索引里挑出当前任务相关的记忆。
+- `loadMemories(messages)`：把选中的记忆正文合并成一段上下文，只在本轮请求时注入。
+- `extractMemories(messages)`：任务结束后调用模型，判断哪些信息值得跨会话保存。
+- `consolidateMemories()`：定期整理记忆，减少重复和过期内容。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s09-memory.js
+```
+
+## !!steps s10：System Prompt —— 从固定文本变成装配流水线
+
+来源：`s10-system-prompt.md`
+
+新人每天上班前需要一份任务说明，但不同场景需要不同提醒：有时要强调安全，有时要带上记忆，有时要加载技能。`s10` 把这份说明书变成装配线，每轮按当前情况组装给他看。
+
+### 新增函数速览
+
+- `assembleSystemPrompt(context)`：按固定顺序把身份、工具、技能、压缩规则和记忆拼成最终 system prompt。
+- `getSystemPrompt(context)`：按上下文 key 缓存 system prompt，避免每一轮重复拼装。
+- `resetSystemPromptCache()`：测试或配置变化时清空 prompt 缓存。
+- `buildContext()`：读取当前工具名、skill 列表和 memory 索引，生成 prompt 装配所需的 context；工作目录由 `identity` section 直接读取。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s10-system-prompt.js
+```
+
+## !!steps s11：Error Recovery —— 失败进入恢复分支
+
+来源：`s11-error-recovery.md`
+
+真实工作里，新人会遇到接口限流、服务过载、输出写到一半和材料太长。`s11` 不再让 agent 遇错就退出，而是先判断错误类型，再选择等待重试、续写、压缩或停止。
+
+### 新增函数速览
+
+- `RecoveryState`：记录是否提高过输出上限、续写次数、连续 `529` 次数、是否做过应急压缩，以及当前备用模型。
+- `retryDelay(attempt, retryAfter)`：计算指数退避时间；第二个参数是已经换算成毫秒的等待时间。
+- `withRetry(fn, state)`：包住一次 LLM 请求，只对 `429` 和 `529` 这类瞬态错误退避重试。
+- `setSleepFn(fn)`：测试入口，用立即返回的函数替换真实等待。
+
+`reactiveCompact(messages)` 来自 s08，本章只是把它接到“上下文过长”的恢复分支，不是重新实现一套压缩。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s11-error-recovery.js
+```
+
+## !!steps s12：Task System —— 把目标持久化成任务图
+
+来源：`s12-task-system.md`
+
+Todo 像当前会话里的便签；跨会话、跨阶段协作时，则需要一块能保存下来的任务板。`s12` 在 `todo_write` 之外增加 task system，让任务有独立文件、依赖关系、状态和负责人。
+
+### 新增函数速览
+
+- `setTasksDir(dir)`：测试入口，把任务目录临时切换到测试目录。
+- `createTask(subject, description, blockedBy)`：创建 `pending` 任务并写入 JSON 文件。
+- `listTasks()`：读取并按文件名排序所有任务。
+- `canStart(id)`：检查 `blockedBy` 中的任务是否全部存在且已完成。
+- `claimTask(id, owner)`：把可开始的任务从 `pending` 改为 `in_progress`，并记录 owner。
+- `completeTask(id)`：把进行中的任务改为 `completed`，再找出刚被解锁的下游任务。
+- `runCreateTask()` / `runListTasks()` / `runGetTask()`：把底层任务函数转换成适合返回给模型的文本。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s12-task-system.js
+```
+
+## !!steps s13：Background Tasks —— 慢操作放到后台
+
+来源：`s13-background-tasks.md`
+
+新人去打印一百页资料时，不该站在打印机旁什么都不做。`s13` 让 agent 把慢命令交给后台子进程，先拿到任务 id，继续处理别的工作，完成后再接收通知。
+
+### 新增函数速览
+
+- `isSlowOperation(name, args)`：只对 `bash` 命令做关键词判断，例如 `install`、`build`、`test`。
+- `shouldRunBackground(name, args)`：模型显式传 `run_in_background` 时优先，否则使用慢命令启发式。
+- `startBackgroundTask(name, args, run)`：创建 `bg_XXXX` 记录，异步启动 `run`，立即返回任务 id。
+- `runBashInBackground(command)`：使用 `spawn()` 启动异步 shell 子进程并收集 stdout / stderr。
+- `collectBackgroundResults()`：取出已完成任务，生成 `&lt;task_notification>`，并从 Map 删除任务。
+- `injectBackgroundNotifications(messages)`：把完成通知作为新的 `user` 消息加入对话。
+- `waitForBackgroundTick()`：等待 25ms，让超快命令有机会在本轮结束前完成。
+- `resetBackgroundTasks()`：测试入口，清空后台任务状态。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s13-background-tasks.js
+```
+
+## !!steps s14：Cron Scheduler —— 时间也能触发 agent
+
+来源：`s14-cron-scheduler.md`
+
+有些任务不该一直等用户开口，比如每天早上检查日报、每隔几分钟看一次任务状态。`s14` 给 agent 装一个闹钟：时间到了，系统自动把预设 prompt 送进 agent loop。
+
+这一章对齐 Python 版的核心设计：**scheduler 负责发现到点任务，queue processor 负责在 agent 空闲时自动交付任务。**
+
+### 新增函数速览
+
+- `cronMatches(expr, date)`：判断某个时间是否命中五段式 cron 表达式；这是纯工具函数，放在 `helper.js`。
+- `validateCron(expr)`：在保存前检查 cron 表达式；这是纯工具函数，放在 `helper.js`。
+- `setCronStorePath(path)` / `resetCron()`：测试入口，替换持久化文件并清空进程内状态。
+- `loadDurableJobs()`：启动时从 `.scheduled_tasks.json` 恢复合法的 durable job。
+- `scheduleJob(cron, prompt, recurring, durable)`：创建定时任务，并决定是否写入 `.scheduled_tasks.json`。
+- `cancelJob(id)` / `listCronJobs()`：取消或列出已注册任务。
+- `cronTick(now)`：每秒扫描任务，把到点任务放入 `cronQueue`。
+- `hasCronQueue()`：判断队列里是否有等待交付的任务。
+- `consumeCronQueue()`：一次性取出队列里的到点任务。
+- `processCronQueue()`：当 agent 空闲且队列里有任务时，自动启动一轮 agent loop。
+- `runInteractiveAgentTurn()`：用户输入也要等待当前定时任务结束，避免两个 agent loop 同时修改共享状态。
+- `runScheduleCron()` / `runListCrons()` / `runCancelCron()`：把 cron 能力包装成模型可调用的工具 handler。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s14-cron-scheduler.js
+```
+
+## !!steps s15：Agent Teams —— 有身份的队友和文件邮箱
+
+来源：`s15-agent-teams.md`
+
+当任务变大，一个 agent 不够用了。`s15` 开始搭一个小团队：每个队友有名字、角色、独立上下文和文件收件箱；lead 不必等待队友执行完，结果会通过邮箱稍后返回。
+
+### 新增函数速览
+
+- `sendMessage(from, to, content, type)`：把一条消息追加写入 `to.jsonl`，例如发给 lead 就写 `.mailboxes/lead.jsonl`。
+- `readInbox(agent)`：读取某个 agent 的收件箱，读完就删除文件，表示消息已经被消费。
+- `spawnTeammate(name, role, prompt, confirm)`：启动一个后台队友，立即返回；队友稍后把总结写进 lead 的邮箱。
+- `runSpawnTeammate`、`runSendMessage`、`runCheckInbox`：把 LLM 的 tool call 参数转成具体函数调用。
+- `runInteractiveAgentTurn`：沿用 `s14` 的保护逻辑，避免用户输入回合和 cron 自动回合同一时间抢 `agentLoop`。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s15-agent-teams.js
+```
+
+## !!steps s16：Team Protocols —— 协作用 request-response
+
+来源：`s16-team-protocols.md`
+
+队友变多以后，光靠“随口聊天”很快会乱：谁提出了请求，谁批准了计划，哪条回复对应哪件事，都需要一个可追踪的格式。`s16` 在 `s15` 的文件邮箱上加一层团队协议：每个请求都有 `request_id`，每个响应都带着同一个 `request_id` 回来。
+
+### 新增函数速览
+
+- `newRequestId()`：内部函数，生成 `req_0000` 这种进程内递增 ID。
+- `resetProtocol()`：测试入口，清空 pending request 并重置序号。
+- `matchResponse(responseType, requestId, approve)`：根据响应类型和 `request_id` 更新 pending 状态。
+- `consumeLeadInbox(routeProtocol)`：读取 lead 收件箱，先把协议响应路由到状态机，再返回消息。
+- `teammateSubmitPlan(fromName, plan)`：队友调用 `submit_plan` 时，创建 `plan_approval` pending request，并写入 lead inbox。
+- teammate idle loop：队友没有新工具要调用时，短暂等待 inbox；收到普通消息就继续跑，收到 shutdown 就回复并退出。
+- `runRequestShutdown(&#123; teammate &#125;)`：lead 写入 `shutdown_request`，等待队友回 `shutdown_response`。
+- `runRequestPlan(&#123; teammate, task &#125;)`：lead 让队友先提交计划；真正的 pending request 会在队友调用 `submit_plan` 时创建。
+- `runReviewPlan(&#123; request_id, approve, feedback &#125;)`：lead 审批计划，并把 `plan_approval_response` 发回队友。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s16-team-protocols.js
+```
+
+## !!steps s17：MCP Plugin —— 外部工具进入统一控制面
+
+来源：`s17-mcp-plugin.md`
+
+一个 coding agent 不可能把搜索、数据库、浏览器、部署平台和公司内部系统全写进主文件。`s17` 用一个可运行的 mock MCP hub 演示：外部工具被发现以后，怎样和内置工具共用同一条 agent loop。
+
+### 新增函数速览
+
+- `prefixedMcpName(serverName, toolDef)`：生成 `mcp__docs__search` 形式的全局工具名。
+- `createMockMcpHub()`：创建内置 `docs`、`deploy` server，并保存已连接 server。
+- `resetMcp()`：测试入口，重建 hub 并清空 system prompt 缓存。
+- `mcpToolSchemas()`：把已发现工具转成模型可接收的 function tool schema。
+- `allTools()`：合并内置工具与当前已发现的 MCP 工具。
+- `findMcpTool(name)` / `getHandler(name)`：按名字查找 MCP 定义，并把内置与外部 handler 统一到一个分发入口。
+- `runConnectMcp(&#123; name &#125;)`：连接 mock server，打印新发现的工具，并让 prompt 缓存失效。
+
+```js ! agent.js range=1:220
+!from ../../code-agent-course/s17-mcp-plugin.js
+```
+
+## !outro
+
+这 19 节先把一个 Code Agent 从最小 HTTP 调用推进到 Agent Runtime 的工程地图。后续如果要继续做交互体验，可以把每章再拆成更细的 step，但内容源仍然应该继续来自 `code-agent-course`。
+

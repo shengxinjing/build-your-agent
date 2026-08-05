@@ -55,26 +55,26 @@
 
 
 
-This file is for agents who continue maintaining this project. The goal is to reduce guesswork, verify changes, and keep `writing19` publishable as a Chinese tutorial series on building a Code Agent from scratch.
+This file is for agents who continue maintaining this project. The goal is to reduce guesswork, verify changes, and keep `code-agent-course` publishable as a Chinese tutorial series on building a Code Agent from scratch.
 
 ## Project Purpose
 
 - Project name: `build-your-agent`
 - Main track: Rebuild and explain core Code Agent mechanisms with JavaScript / Node.js.
-- Tutorial directory: `writing19/`
-- Shared helper file: `writing19/helper.js`
+- Tutorial directory: `code-agent-course/`
+- Shared helper file: `code-agent-course/helper.js`
 - Key rule: each chapter builds on the previous chapter. Later chapters should keep earlier capabilities and add new ones, not remove the foundation.
 
 ## Work Scope
 
-Prefer changing only the files the user asks about. Most requests are about maintaining `writing19`; unless explicitly asked, do not casually edit the Next.js app, UI components, or unrelated directories.
+Prefer changing only the files the user asks about. Most requests are about maintaining `code-agent-course`; unless explicitly asked, do not casually edit the Next.js app, UI components, or unrelated directories.
 
 Common file set:
 
-- `writing19/sXX-*.js`: JavaScript implementation for the chapter.
-- `writing19/sXX-*.md`: Chinese tutorial for the chapter.
-- `writing19/sXX-*.test.js`: Regression tests for the chapter.
-- `writing19/sXX-*.py`: Python reference implementation, usually read-only reference.
+- `code-agent-course/sXX-*.js`: JavaScript implementation for the chapter.
+- `code-agent-course/sXX-*.md`: Chinese tutorial for the chapter.
+- `code-agent-course/sXX-*.test.js`: Regression tests for the chapter.
+- `code-agent-course/sXX-*.py`: Python reference implementation, usually read-only reference.
 
 ## Chapter Progression Rules
 
@@ -116,27 +116,27 @@ Use plain wording. For example, prefer “write to a file” or “persist to di
 After changing one chapter, run that chapter’s tests first:
 
 ```bash
-pnpm vitest run writing19/s14-cron-scheduler.test.js
+pnpm vitest run code-agent-course/s14-cron-scheduler.test.js
 ```
 
 After changing `helper.js` or shared logic, run chapters 00-14:
 
 ```bash
-pnpm vitest run writing19/s{00..14}-*.test.js
+pnpm vitest run code-agent-course/s{00..14}-*.test.js
 ```
 
 Syntax checks:
 
 ```bash
-node --check writing19/helper.js
-node --check writing19/s14-cron-scheduler.js
+node --check code-agent-course/helper.js
+node --check code-agent-course/s14-cron-scheduler.js
 ```
 
 For Markdown-only changes, at least check headings and code fences:
 
 ```bash
-rg -n "^#|^##|^###" writing19/s14-cron-scheduler.md
-node -e "const fs=require('fs');const t=fs.readFileSync('writing19/s14-cron-scheduler.md','utf8');console.log((t.match(/```/g)||[]).length % 2 === 0)"
+rg -n "^#|^##|^###" code-agent-course/s14-cron-scheduler.md
+node -e "const fs=require('fs');const t=fs.readFileSync('code-agent-course/s14-cron-scheduler.md','utf8');console.log((t.match(/```/g)||[]).length % 2 === 0)"
 ```
 
 ## Current s14 Design

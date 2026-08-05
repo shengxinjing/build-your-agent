@@ -2,6 +2,8 @@ import type { TutorialSharedFileConfig } from "@/lib/tutorial-files"
 
 export const buildYourAgentSharedFiles: TutorialSharedFileConfig[] = [
   {
-    path: "./snippets/helper.js",
+    path: "./snippets/code-agent-course-helper.js",
+    fileName: "helper.js",
+    range: "1:140",
   },
 ]

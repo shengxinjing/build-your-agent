@@ -1,16 +1,10 @@
 import { notFound } from "next/navigation"
-import EnContent from "@/app/build-your-agent/content.en.mdx"
-import CnContent from "@/app/build-your-agent/content.cn.mdx"
+import GeneratedContent from "@/app/build-your-agent/content.generated.cn.mdx"
 import { BuildYourAgentArticlePage } from "@/app/build-your-agent/article-page"
 import {
   isLocale,
   locales,
 } from "@/lib/i18n"
-
-const contentByLocale = {
-  en: EnContent,
-  cn: CnContent,
-} as const
 
 export function generateStaticParams() {
   return locales.map((locale) => ({ locale }))
@@ -29,7 +23,7 @@ export default async function Page({
 
   return (
     <BuildYourAgentArticlePage
-      content={contentByLocale[locale]}
+      content={GeneratedContent}
       locale={locale}
     />
   )

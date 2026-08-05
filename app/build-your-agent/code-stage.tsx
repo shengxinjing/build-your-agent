@@ -1,5 +1,9 @@
 "use client"
 
+import type {
+  AnnotationHandler,
+  HighlightedCode,
+} from "codehike/code"
 import type { ReactNode } from "react"
 import {
   useEffect,
@@ -8,8 +12,13 @@ import {
   useState,
 } from "react"
 import { useSelectedIndex } from "codehike/utils/selection"
+import { tokenTransitions } from "../components/annotations/token-transitions"
+import { callout } from "../components/annotations/callout"
+import { ThemedPre } from "../components/themed-pre"
 import { CopyButton } from "./button"
+import { focus } from "./focus"
 import { LiveDemo } from "./livedemo"
+import { mark } from "./mark"
 import { useLlmSettings } from "./use-llm-settings"
 import type { Locale } from "@/lib/i18n"
 import { getNextActiveFileName } from "@/lib/tutorial-files"
@@ -31,15 +40,45 @@ type CodeStageStep = {
   files: CodeStageFile[]
 }
 
+type HighlightedCodePair = {
+  light: HighlightedCode
+  dark: HighlightedCode
+} | null
+
+const borderHandler: AnnotationHandler = {
+  name: "border",
+  Block: ({ annotation, children }) => {
+    const borderColor = annotation.query || "red"
+    return <div style={{ border: "1px solid", borderColor }}>{children}</div>
+  },
+}
+
+const bgHandler: AnnotationHandler = {
+  name: "bg",
+  Inline: ({ annotation, children }) => {
+    const background = annotation.query || "#2d26"
+    return <span style={{ background }}>{children}</span>
+  },
+}
+
+const codeHandlers = [
+  tokenTransitions,
+  mark,
+  focus,
+  borderHandler,
+  bgHandler,
+  callout,
+]
+
 export function CodeStage({
   locale,
-  animatedRenders,
-  staticRenders,
+  highlightedCodes,
+  sharedFiles,
   steps,
 }: {
   locale: Locale
-  animatedRenders: ReactNode[][]
-  staticRenders: ReactNode[][]
+  highlightedCodes: HighlightedCodePair[][]
+  sharedFiles: CodeStageFile[]
   steps: CodeStageStep[]
 }) {
   const [selectedIndex] = useSelectedIndex()
@@ -48,46 +87,64 @@ export function CodeStage({
     llmProvider,
   } = useLlmSettings()
   const scrollRef = useRef<HTMLDivElement>(null)
-  const previousSelectedIndexRef = useRef(selectedIndex)
-  const resolvedSteps = useMemo(
+  const resolvedSharedFiles = useMemo(
     () =>
-      steps.map((step) => ({
-        ...step,
-        files: step.files.map((file) => {
-          if (file.fileName !== "helper.js") {
-            return file
-          }
+      sharedFiles.map((file) => {
+        if (file.fileName !== "helper.js") {
+          return file
+        }
 
-          const localizedCode = localizeCodeComments(
-            file.runtimeCode,
-            locale,
-          )
-          const code = injectLlmSettingsIntoHelper(
-            localizedCode,
-            {
-              apiToken,
-              llmProvider,
-            },
-          )
+        const localizedDisplayCode = localizeCodeComments(
+          file.copyText,
+          locale,
+        )
+        const localizedRuntimeCode = localizeCodeComments(
+          file.runtimeCode,
+          locale,
+        )
+        const settings = {
+          apiToken,
+          llmProvider,
+        }
+        const displayCode = injectLlmSettingsIntoHelper(
+          localizedDisplayCode,
+          settings,
+        )
+        const runtimeCode = injectLlmSettingsIntoHelper(
+          localizedRuntimeCode,
+          settings,
+        )
 
-          return {
-            ...file,
-            copyText: code,
-            runtimeCode: code,
-          }
-        }),
-      })),
-    [apiToken, llmProvider, locale, steps],
+        return {
+          ...file,
+          copyText: displayCode,
+          runtimeCode,
+        }
+      }),
+    [apiToken, llmProvider, locale, sharedFiles],
   )
-  const currentStep =
-    resolvedSteps[selectedIndex] || resolvedSteps[0]
-  const currentAnimatedRenders =
-    animatedRenders[selectedIndex] ||
-    animatedRenders[0] ||
-    []
-  const currentStaticRenders =
-    staticRenders[selectedIndex] ||
-    staticRenders[0] ||
+  const selectedStep = steps[selectedIndex] || steps[0]
+  const currentStep = useMemo(() => {
+    if (!selectedStep) {
+      return undefined
+    }
+
+    return {
+      ...selectedStep,
+      files: [
+        ...selectedStep.files,
+        ...resolvedSharedFiles.filter(
+          (sharedFile) =>
+            !selectedStep.files.some(
+              (file) => file.fileName === sharedFile.fileName,
+            ),
+        ),
+      ],
+    }
+  }, [resolvedSharedFiles, selectedStep])
+  const currentHighlightedCodes =
+    highlightedCodes[selectedIndex] ||
+    highlightedCodes[0] ||
     []
   const [activeFileName, setActiveFileName] = useState<
     string | null
@@ -97,9 +154,6 @@ export function CodeStage({
       currentStep?.files || [],
     ),
   )
-  const [renderMode, setRenderMode] = useState<
-    "animated" | "static"
-  >("animated")
 
   useEffect(() => {
     setActiveFileName((previousFileName) =>
@@ -109,13 +163,6 @@ export function CodeStage({
       ),
     )
   }, [currentStep])
-
-  useEffect(() => {
-    if (previousSelectedIndexRef.current !== selectedIndex) {
-      setRenderMode("animated")
-      previousSelectedIndexRef.current = selectedIndex
-    }
-  }, [selectedIndex])
 
   const activeFileIndex = useMemo(() => {
     if (!currentStep) {
@@ -131,14 +178,25 @@ export function CodeStage({
     activeFileIndex >= 0 ? activeFileIndex : 0
   const activeFile =
     currentStep?.files[resolvedIndex] || null
+  const highlightedCode =
+    currentHighlightedCodes[resolvedIndex] || null
   const activeRender =
     activeFile?.fileName === "helper.js"
       ? (
-        <DynamicCodeBlock code={activeFile.copyText} />
+        <DynamicCodeBlock
+          code={activeFile.copyText}
+        />
       )
-      : renderMode === "static"
-      ? currentStaticRenders[resolvedIndex] || null
-      : currentAnimatedRenders[resolvedIndex] || null
+      : highlightedCode
+        ? (
+          <ThemedPre
+            light={highlightedCode.light}
+            dark={highlightedCode.dark}
+            handlers={codeHandlers}
+            className="h-full bg-transparent pt-10"
+          />
+        )
+        : null
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -170,7 +228,6 @@ export function CodeStage({
                   isActive ? " scrolly-tab--active" : ""
                 }`}
                 onClick={() => {
-                  setRenderMode("static")
                   setActiveFileName(file.fileName)
                 }}
               >
@@ -217,8 +274,52 @@ function DynamicCodeBlock({
   code: string
 }) {
   return (
-    <pre className="overflow-x-auto bg-transparent px-6 pt-10 text-[13px] leading-6 text-slate-800 dark:text-[#ddd6cf]">
-      <code>{code}</code>
+    <pre className="overflow-x-auto bg-transparent px-6 pt-10 text-[13px] leading-6 text-[var(--text)]">
+      <code>{highlightJavaScript(code)}</code>
     </pre>
   )
+}
+
+const javascriptTokenPattern = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:async|await|const|else|export|for|from|function|if|import|let|new|null|return|throw|true|false|try|catch|while)\b|\b\d+(?:\.\d+)?\b)/g
+
+function highlightJavaScript(code: string) {
+  const parts: ReactNode[] = []
+  let cursor = 0
+
+  for (const match of code.matchAll(javascriptTokenPattern)) {
+    const index = match.index
+
+    if (index > cursor) {
+      parts.push(code.slice(cursor, index))
+    }
+
+    parts.push(
+      <span
+        key={`${index}-${match[0]}`}
+        className={`syntax-token syntax-token--${getTokenKind(match[0])}`}
+      >
+        {match[0]}
+      </span>,
+    )
+    cursor = index + match[0].length
+  }
+
+  parts.push(code.slice(cursor))
+  return parts
+}
+
+function getTokenKind(token: string) {
+  if (token.startsWith("//") || token.startsWith("/*")) {
+    return "comment"
+  }
+
+  if (/^["'`]/.test(token)) {
+    return "string"
+  }
+
+  if (/^\d/.test(token)) {
+    return "number"
+  }
+
+  return "keyword"
 }
