@@ -58,12 +58,7 @@ function pickMainMarkdown(markdownFiles, jsFiles) {
 
 async function renderMdx(chapters) {
   const parts = [
-    "## !intro 从 s00 到 s18：从 HTTP 调用到 Agent Runtime",
-    "",
-    "这份内容由 `code-agent-course/s00-s17` 的 JavaScript 主线和 `s18` 进阶阅读生成。",
-    "",
-    "左侧保留每章最关键的讲解，右侧始终把当前章节代码显示成同一个 `agent.js`，这样 CodeHike 可以在章节之间做逐行切换。点击运行按钮时，WebContainer 会挂载当前 `agent.js` 和公共 `helper.js`。",
-    "",
+    "## !intro 从 0 开始构建一个 Code Agent",
   ]
 
   for (const chapter of chapters) {
@@ -192,7 +187,7 @@ function extractExtensionReading(markdown) {
 }
 
 function stripCodeBlocks(markdown) {
-  return markdown.replace(/```[\s\S]*?```/g, "").replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+  return markdown.replace(/```[\s\S]*?```/g, "")
 }
 
 function findSection(markdown, sectionName) {

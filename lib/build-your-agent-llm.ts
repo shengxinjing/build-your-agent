@@ -15,10 +15,10 @@ export const LLM_PROVIDER_CONFIGS = {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
   },
-  anthropic: {
-    baseUrl: "https://api.anthropic.com/v1",
-    model: "claude-sonnet-4-5",
-  },
+  // anthropic: {
+  //   baseUrl: "https://api.anthropic.com/v1",
+  //   model: "claude-sonnet-4-5",
+  // },
   deepseek: {
     baseUrl: "https://api.deepseek.com/v1",
     model: "deepseek-chat",

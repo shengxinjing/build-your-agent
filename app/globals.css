@@ -1043,6 +1043,7 @@ html[data-theme="dark"] .scrolly-icon-button {
 .scrolly-code pre {
   min-height: 100%;
   margin: 0;
+  overflow-x: auto;
   padding-top: 2.8rem !important;
 }
 

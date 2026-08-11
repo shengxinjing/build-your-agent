@@ -73,7 +73,7 @@ export function IdeEditor({
             fontSize: 14,
             glyphMargin: false,
             lineHeight: 26,
-            lineNumbersMinChars: 2.6,
+            lineNumbers: "off",
             minimap: { enabled: false },
             overviewRulerBorder: false,
             padding: {
