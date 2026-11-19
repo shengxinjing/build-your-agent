@@ -5,24 +5,31 @@ import {
   Source_Serif_4,
 } from "next/font/google"
 import "./globals.css"
-import "@xterm/xterm/css/xterm.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { getThemeScript } from "@/lib/theme-script"
 
 const sans = Manrope({
   subsets: ["latin"],
   variable: "--font-sans",
+  display: "swap",
+  preload: true,
 })
 
 const serif = Source_Serif_4({
   subsets: ["latin"],
   variable: "--font-serif",
+  display: "swap",
+  preload: false,
 })
 
 export const metadata: Metadata = {
   title: "Build Your Agent",
   description:
     "A minimal editorial home for essays, tutorials, and agent experiments.",
+  icons: {
+    icon: "/avatar.webp",
+    apple: "/avatar.webp",
+  },
 }
 
 export default function RootLayout({

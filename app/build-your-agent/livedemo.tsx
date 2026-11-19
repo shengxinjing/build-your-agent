@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react"
 import dynamic from "next/dynamic"
+import { createPortal } from "react-dom"
 import {
   useCallback,
   useEffect,
@@ -26,12 +27,16 @@ import {
 } from "react"
 import { useDomThemeMode } from "@/components/theme-provider"
 import type { Locale } from "@/lib/i18n"
+import {
+  getEditorLanguage,
+  getExtension,
+} from "@/lib/tutorial-files"
 
 const IdeEditor = dynamic(
   () => import("./ide-editor").then((module) => module.IdeEditor),
   {
     loading: () => (
-      <div className="live-demo-panel flex h-full items-center justify-center rounded-[28px] text-sm">
+      <div className="live-demo-panel flex h-full items-center justify-center rounded-[22px] text-xs">
         Loading editor...
       </div>
     ),
@@ -56,6 +61,7 @@ type LiveDemoProps = {
   entryFileName: string
   files: DemoFile[]
   locale: Locale
+  stepIndex: number
 }
 
 type DemoFile = {
@@ -63,6 +69,47 @@ type DemoFile = {
   fileName: string
   lang: string
   meta: string
+  needsRuntimeFetch?: boolean
+}
+
+const runtimeCodeCache = new Map<number, Promise<string>>()
+
+async function loadStepRuntimeCode(stepIndex: number) {
+  const cached = runtimeCodeCache.get(stepIndex)
+
+  if (cached) {
+    return cached
+  }
+
+  const request = fetch(
+    `/api/build-your-agent/runtime/${stepIndex}`,
+  )
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(
+          `Failed to load runtime code for step ${stepIndex} (${response.status})`,
+        )
+      }
+
+      const payload = (await response.json()) as {
+        code?: unknown
+      }
+
+      if (typeof payload.code !== "string") {
+        throw new Error(
+          `Invalid runtime payload for step ${stepIndex}`,
+        )
+      }
+
+      return payload.code
+    })
+    .catch((error) => {
+      runtimeCodeCache.delete(stepIndex)
+      throw error
+    })
+
+  runtimeCodeCache.set(stepIndex, request)
+  return request
 }
 
 type Status =
@@ -104,32 +151,63 @@ export function LiveDemo({
   entryFileName,
   files,
   locale,
+  stepIndex,
 }: LiveDemoProps) {
   const domTheme = useDomThemeMode()
   const isDark = domTheme === "dark"
   const copy = liveDemoCopy[locale]
+  const [loadedRuntime, setLoadedRuntime] = useState<{
+    code: string
+    stepIndex: number
+  } | null>(null)
+  const needsRuntimeFetch = files.some(
+    (file) => file.needsRuntimeFetch,
+  )
+  const runtimeReady =
+    !needsRuntimeFetch ||
+    loadedRuntime?.stepIndex === stepIndex
+  const resolvedFiles = useMemo(() => {
+    const runtimeCode =
+      loadedRuntime?.stepIndex === stepIndex
+        ? loadedRuntime.code
+        : null
+
+    if (runtimeCode === null) {
+      return files
+    }
+
+    return files.map((file) =>
+      file.needsRuntimeFetch
+        ? { ...file, code: runtimeCode, needsRuntimeFetch: false }
+        : file,
+    )
+  }, [files, loadedRuntime, stepIndex])
+  const [open, setOpen] = useState(false)
+  const [status, setStatus] = useState<Status>("idle")
+  const [error, setError] = useState<string | null>(null)
+  const [runNonce, setRunNonce] = useState(0)
+
   const baseWorkspace = useMemo(
     () =>
-      createWorkspaceFiles({
-        activeFileName,
-        entryFileName,
-        files,
-      }),
-    [activeFileName, entryFileName, files],
+      open
+        ? createWorkspaceFiles({
+            activeFileName,
+            entryFileName,
+            files: resolvedFiles,
+          })
+        : null,
+    [activeFileName, entryFileName, open, resolvedFiles],
   )
   const [drafts, setDrafts] = useState<
     Record<string, string>
-  >(() =>
-    Object.fromEntries(
-      baseWorkspace.allFiles.map((f) => [
-        f.fileName,
-        f.contents,
-      ]),
-    ),
-  )
+  >({})
   const [editorFileName, setEditorFileName] =
     useState(activeFileName)
   const workspace = useMemo(() => {
+    if (!baseWorkspace) {
+      return null
+    }
+
     const tree = { ...baseWorkspace.tree }
 
     for (const entry of baseWorkspace.allFiles) {
@@ -146,11 +224,6 @@ export function LiveDemo({
   }, [baseWorkspace, drafts])
   const editorValue = drafts[editorFileName] ?? ""
 
-  const [open, setOpen] = useState(false)
-  const [status, setStatus] = useState<Status>("idle")
-  const [error, setError] = useState<string | null>(null)
-  const [runNonce, setRunNonce] = useState(0)
-
   const mountedRef = useRef(true)
   const activeBootRef = useRef(0)
   const terminalHostRef = useRef<HTMLDivElement | null>(null)
@@ -161,7 +234,12 @@ export function LiveDemo({
   const webcontainerErrorCleanupRef =
     useRef<(() => void) | null>(null)
   const workspaceMountedRef = useRef(false)
-  const workspaceRef = useRef(workspace)
+  const workspaceRef = useRef<WorkspaceFiles | null>(workspace)
+  const filesRef = useRef(files)
+  const activeFileNameRef = useRef(activeFileName)
+  const entryFileNameRef = useRef(entryFileName)
+  const stepIndexRef = useRef(stepIndex)
+  const loadedRuntimeStepRef = useRef<number | null>(null)
   const closeWorkspaceRef =
     useRef<(() => void) | null>(null)
   const lastOpenThemeRef = useRef(domTheme)
@@ -172,6 +250,10 @@ export function LiveDemo({
   } | null>(null)
 
   useEffect(() => {
+    if (!baseWorkspace) {
+      return
+    }
+
     setDrafts(
       Object.fromEntries(
         baseWorkspace.allFiles.map((f) => [
@@ -183,12 +265,23 @@ export function LiveDemo({
   }, [baseWorkspace])
 
   useEffect(() => {
+    if (!open) {
+      return
+    }
+
     setEditorFileName(activeFileName)
-  }, [activeFileName])
+  }, [activeFileName, open])
 
   useEffect(() => {
     workspaceRef.current = workspace
   }, [workspace])
+
+  useEffect(() => {
+    filesRef.current = files
+    activeFileNameRef.current = activeFileName
+    entryFileNameRef.current = entryFileName
+    stepIndexRef.current = stepIndex
+  }, [activeFileName, entryFileName, files, stepIndex])
 
   const terminalTheme = useMemo(
     () => getTerminalTheme(domTheme),
@@ -262,6 +355,7 @@ export function LiveDemo({
     const [{ FitAddon }, { Terminal }] = await Promise.all([
       import("@xterm/addon-fit"),
       import("@xterm/xterm"),
+      import("./xterm-styles"),
     ])
     const fitAddon = new FitAddon()
     const terminal = new Terminal({
@@ -269,7 +363,8 @@ export function LiveDemo({
       cursorBlink: true,
       fontFamily:
         'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-      fontSize: 15,
+      fontSize: 12,
+      lineHeight: 1.35,
       overviewRuler: {
         showBottomBorder: false,
         showTopBorder: false,
@@ -335,7 +430,6 @@ export function LiveDemo({
   const bootWorkspace = useCallback(async () => {
     const bootId = activeBootRef.current + 1
     activeBootRef.current = bootId
-    const currentWorkspace = workspaceRef.current
 
     setStatus("booting")
     setError(null)
@@ -349,6 +443,12 @@ export function LiveDemo({
     }
 
     try {
+      const step = stepIndexRef.current
+      const currentFiles = filesRef.current
+      const needsFetch =
+        currentFiles.some((file) => file.needsRuntimeFetch) &&
+        loadedRuntimeStepRef.current !== step
+
       const runtime = await ensureTerminal()
 
       if (
@@ -361,13 +461,45 @@ export function LiveDemo({
       runtime.terminal.clear()
       runtime.terminal.writeln("Booting...")
 
-      const instance = await getWebContainer()
+      const [instance, fetchedCode] = await Promise.all([
+        getWebContainer(),
+        needsFetch
+          ? loadStepRuntimeCode(step)
+          : Promise.resolve(null),
+      ])
 
       if (
         !mountedRef.current ||
         activeBootRef.current !== bootId
       ) {
         return
+      }
+
+      const targetWorkspace =
+        fetchedCode !== null
+          ? createWorkspaceFiles({
+              activeFileName: activeFileNameRef.current,
+              entryFileName: entryFileNameRef.current,
+              files: currentFiles.map((file) =>
+                file.needsRuntimeFetch
+                  ? {
+                      ...file,
+                      code: fetchedCode,
+                      needsRuntimeFetch: false,
+                    }
+                  : file,
+              ),
+            })
+          : workspaceRef.current ??
+            createWorkspaceFiles({
+              activeFileName: activeFileNameRef.current,
+              entryFileName: entryFileNameRef.current,
+              files: currentFiles,
+            })
+
+      if (fetchedCode !== null) {
+        loadedRuntimeStepRef.current = step
+        setLoadedRuntime({ stepIndex: step, code: fetchedCode })
       }
 
       webcontainerErrorCleanupRef.current?.()
@@ -381,7 +513,7 @@ export function LiveDemo({
       setStatus("syncing")
       workspaceMountedRef.current = false
 
-      await syncManagedFiles(instance, currentWorkspace)
+      await syncManagedFiles(instance, targetWorkspace)
       workspaceMountedRef.current = true
 
       if (
@@ -413,6 +545,44 @@ export function LiveDemo({
       setError(getErrorMessage(cause))
     }
   }, [ensureTerminal, fitTerminal])
+
+  useEffect(() => {
+    if (
+      !open ||
+      !needsRuntimeFetch ||
+      loadedRuntime?.stepIndex === stepIndex
+    ) {
+      return
+    }
+
+    let cancelled = false
+
+    void loadStepRuntimeCode(stepIndex)
+      .then((code) => {
+        if (cancelled) {
+          return
+        }
+
+        loadedRuntimeStepRef.current = stepIndex
+        setLoadedRuntime({ stepIndex, code })
+      })
+      .catch((cause) => {
+        if (cancelled) {
+          return
+        }
+
+        setError(getErrorMessage(cause))
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    loadedRuntime?.stepIndex,
+    needsRuntimeFetch,
+    open,
+    stepIndex,
+  ])
 
   useEffect(() => {
     if (!open) {
@@ -567,6 +737,7 @@ export function LiveDemo({
   }, [editorFileName, editorValue, open])
 
   const openWorkspace = () => {
+    setEditorFileName(activeFileName)
     setOpen(true)
     setRunNonce((current) => current + 1)
   }
@@ -574,6 +745,8 @@ export function LiveDemo({
   const closeWorkspace = async () => {
     activeBootRef.current += 1
     workspaceMountedRef.current = false
+    loadedRuntimeStepRef.current = null
+    setLoadedRuntime(null)
     setOpen(false)
     setStatus("idle")
     setError(null)
@@ -599,21 +772,22 @@ export function LiveDemo({
         type="button"
         onClick={openWorkspace}
         className="scrolly-icon-button"
-        aria-label={`Open ${workspace.fileName} in WebContainer terminal`}
+        aria-label={`Open ${activeFileName} in WebContainer terminal`}
       >
         <Play size={14} />
       </button>
 
-      {open ? (
-        <div
-          className="live-demo-overlay fixed inset-0 z-50 overflow-hidden overscroll-none p-5"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="live-demo-shell mx-auto flex h-full max-w-[118rem] flex-col overflow-hidden rounded-[36px] p-6">
-            <div className="flex flex-wrap items-center justify-between gap-4 pb-6">
+      {open && workspace && typeof document !== "undefined"
+        ? createPortal(
+          <div
+            className="live-demo-overlay fixed inset-0 z-50 overflow-hidden overscroll-none p-3 sm:p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+          <div className="live-demo-shell mx-auto flex h-full max-w-[118rem] flex-col overflow-hidden rounded-[28px] p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5">
               <div className="min-w-0">
-                <div className="text-sm font-semibold live-demo-heading">
+                <div className="text-[13px] font-semibold live-demo-heading">
                   Playground
                 </div>
 
@@ -630,9 +804,9 @@ export function LiveDemo({
                   onClick={() =>
                     setRunNonce((current) => current + 1)
                   }
-                  className="live-demo-control inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm transition"
+                  className="live-demo-control inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs transition"
                 >
-                  <RefreshCw size={15} />
+                  <RefreshCw size={13} />
                   Remount
                 </button>
 
@@ -641,23 +815,23 @@ export function LiveDemo({
                   onClick={() => {
                     void closeWorkspace()
                   }}
-                  className="live-demo-control inline-flex items-center justify-center rounded-full p-2 transition"
+                  className="live-demo-control inline-flex items-center justify-center rounded-full p-1.5 transition"
                   aria-label="Close live demo"
                 >
-                  <X size={16} />
+                  <X size={15} />
                 </button>
               </div>
             </div>
 
-            <div className="grid min-h-0 min-w-0 flex-1 gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(22rem,0.92fr)] xl:grid-cols-[minmax(0,1.08fr)_minmax(26rem,0.92fr)]">
+            <div className="grid min-h-0 min-w-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(18rem,0.75fr)] xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.72fr)]">
               <section className="flex min-h-0 min-w-0 flex-col">
-                <div className="pb-4">
-                  <div className="live-demo-muted mt-1 text-sm leading-6">
+                <div className="pb-2.5">
+                  <div className="live-demo-muted mt-0.5 text-xs leading-5">
                     {copy.editableHint}
                   </div>
                 </div>
 
-                <div className="flex min-h-0 min-w-0 flex-1 gap-3">
+                <div className="flex min-h-0 min-w-0 flex-1 gap-2.5">
                   <FileTree
                     files={workspace.allFiles}
                     activeFileName={editorFileName}
@@ -665,43 +839,49 @@ export function LiveDemo({
                   />
 
                   <div className="min-h-0 min-w-0 flex-1">
-                    <IdeEditor
-                      key={editorFileName}
-                      fileName={editorFileName}
-                      language={getEditorLanguage(
-                        editorFileName,
-                      )}
-                      onChange={(value) => {
-                        setDrafts((current) => ({
-                          ...current,
-                          [editorFileName]: value,
-                        }))
-                      }}
-                      value={editorValue}
-                    />
+                    {runtimeReady ? (
+                      <IdeEditor
+                        key={editorFileName}
+                        fileName={editorFileName}
+                        language={getEditorLanguage(
+                          editorFileName,
+                        )}
+                        onChange={(value) => {
+                          setDrafts((current) => ({
+                            ...current,
+                            [editorFileName]: value,
+                          }))
+                        }}
+                        value={editorValue}
+                      />
+                    ) : (
+                      <div className="live-demo-panel flex h-full items-center justify-center rounded-[22px] text-xs">
+                        Loading editor...
+                      </div>
+                    )}
                   </div>
                 </div>
               </section>
 
               <section className="flex min-h-0 min-w-0 flex-col">
-                <div className="pb-4">
-                  <div className="live-demo-muted mt-1 text-sm leading-6">
+                <div className="pb-2.5">
+                  <div className="live-demo-muted mt-0.5 text-xs leading-5">
                     {copy.terminalHintPrefix}{" "}
-                    <code className="live-demo-inline-code rounded-md px-1.5 py-0.5 text-[13px] font-medium">
+                    <code className="live-demo-inline-code rounded-md px-1.5 py-0.5 text-[11px] font-medium">
                       {`node ${workspace.entryFileName}`}
                     </code>{" "}
                     {copy.terminalHintSuffix}
                   </div>
                   {error ? (
-                    <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200">
+                    <p className="mt-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200">
                       {error}
                     </p>
                   ) : null}
                 </div>
 
-                <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-4 overflow-hidden">
-                  <div className="live-demo-panel min-h-0 min-w-0 rounded-[28px] p-4 shadow-[0_30px_80px_rgba(148,163,184,0.15)]">
-                    <div className="live-demo-terminal-shell h-full min-h-[18rem] w-full min-w-0 overflow-hidden rounded-[22px] lg:min-h-[20rem]">
+                <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-3 overflow-hidden">
+                  <div className="live-demo-panel min-h-0 min-w-0 rounded-[22px] p-3 shadow-[0_30px_80px_rgba(148,163,184,0.15)]">
+                    <div className="live-demo-terminal-shell h-full min-h-[16rem] w-full min-w-0 overflow-hidden rounded-[16px] lg:min-h-[18rem]">
                       <div
                         ref={terminalHostRef}
                         className="live-demo-terminal h-full w-full min-h-0 min-w-0 cursor-text"
@@ -711,7 +891,7 @@ export function LiveDemo({
                     </div>
                   </div>
 
-                  <div className="grid min-w-0 shrink-0 gap-3 sm:grid-cols-2">
+                  <div className="grid min-w-0 shrink-0 gap-2.5 sm:grid-cols-2">
                     {workspace.suggestedCommands.map(
                       ({ command, label }) => (
                         <QuickActionCard
@@ -732,8 +912,10 @@ export function LiveDemo({
               </section>
             </div>
           </div>
-        </div>
-      ) : null}
+        </div>,
+          document.body,
+        )
+        : null}
     </>
   )
 }
@@ -798,7 +980,7 @@ function StatusBadge({
 
   return (
     <span
-      className={`rounded-full border px-2.5 py-1 text-xs font-medium shadow-sm ${className}`}
+      className={`rounded-full border px-2 py-0.5 text-[11px] font-medium shadow-sm ${className}`}
     >
       {label}
     </span>
@@ -815,8 +997,8 @@ function FileTree({
   onSelect: (fileName: string) => void
 }) {
   return (
-    <div className="live-demo-file-tree shrink-0 overflow-y-auto rounded-[20px] py-3">
-      <div className="live-demo-file-tree__header px-4 pb-2 text-[11px] font-semibold uppercase tracking-[0.12em]">
+    <div className="live-demo-file-tree shrink-0 overflow-y-auto rounded-[18px] py-2.5">
+      <div className="live-demo-file-tree__header px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em]">
         Files
       </div>
       {files.map((file) => {
@@ -828,7 +1010,7 @@ function FileTree({
             key={file.fileName}
             type="button"
             onClick={() => onSelect(file.fileName)}
-            className={`live-demo-file-tree__item flex w-full items-center gap-2 px-4 py-1.5 text-left text-[13px] transition ${
+            className={`live-demo-file-tree__item flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs transition ${
               isActive
                 ? "live-demo-file-tree__item--active"
                 : ""
@@ -855,7 +1037,7 @@ function FileIcon({
   if (fileName === "package.json" || ext === "json") {
     return (
       <FileJson
-        size={14}
+        size={13}
         className="shrink-0 opacity-60"
       />
     )
@@ -864,7 +1046,7 @@ function FileIcon({
   if (ext === "md") {
     return (
       <FileText
-        size={14}
+        size={13}
         className="shrink-0 opacity-60"
       />
     )
@@ -872,7 +1054,7 @@ function FileIcon({
 
   return (
     <File
-      size={14}
+      size={13}
       className="shrink-0 opacity-60"
     />
   )
@@ -889,13 +1071,13 @@ function QuickActionCard({
     <button
       type="button"
       onClick={onClick}
-      className="live-demo-command-card min-w-0 rounded-[22px] px-5 py-4 text-left transition hover:-translate-y-0.5"
+      className="live-demo-command-card min-w-0 rounded-[16px] px-3.5 py-2.5 text-left transition hover:-translate-y-0.5"
     >
-      <div className="live-demo-command-card__label text-sm font-semibold">
+      <div className="live-demo-command-card__label text-xs font-semibold">
         {label}
       </div>
-      <div className="live-demo-command-card__row mt-3 flex min-w-0 items-center gap-3 text-[15px] font-semibold">
-        <ChevronRight size={18} className="live-demo-command-card__icon" />
+      <div className="live-demo-command-card__row mt-1.5 flex min-w-0 items-center gap-1.5 text-xs font-semibold">
+        <ChevronRight size={14} className="live-demo-command-card__icon shrink-0" />
         <code className="live-demo-command-card__code min-w-0 overflow-hidden text-ellipsis whitespace-nowrap rounded-md px-1.5 py-0.5">
           {command}
         </code>
@@ -1207,45 +1389,6 @@ async function writeWorkspaceFile(
 ) {
   const instance = await getWebContainer()
   await instance.fs.writeFile(fileName, contents)
-}
-
-function getExtension(fileName: string) {
-  const match = fileName.match(/\.([a-z0-9]+)$/i)
-  return match?.[1].toLowerCase() || ""
-}
-
-function getEditorLanguage(fileName: string) {
-  const extension = getExtension(fileName)
-
-  if (extension === "js" || extension === "mjs") {
-    return "javascript"
-  }
-
-  if (extension === "jsx") {
-    return "javascript"
-  }
-
-  if (extension === "ts") {
-    return "typescript"
-  }
-
-  if (extension === "tsx") {
-    return "typescript"
-  }
-
-  if (extension === "json") {
-    return "json"
-  }
-
-  if (extension === "sh") {
-    return "shell"
-  }
-
-  if (extension === "md") {
-    return "markdown"
-  }
-
-  return extension || "javascript"
 }
 
 function getErrorMessage(cause: unknown) {

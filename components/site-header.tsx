@@ -38,6 +38,7 @@ export function SiteHeader({
           height={52}
           className="site-header__logo"
           priority
+          fetchPriority="high"
         />
       </Link>
 

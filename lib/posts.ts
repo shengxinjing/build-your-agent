@@ -1,6 +1,6 @@
 import type { Locale } from "@/lib/i18n"
 
-export type PostKind = "tutorial" | "essay"
+type PostKind = "tutorial" | "essay"
 
 export type PostSummary = {
   slug: string
@@ -60,12 +60,6 @@ export function getPublishedPosts(locale: Locale) {
     .filter((post) => post.published)
     .map((post) => localizePost(post, locale))
     .sort(byDateDesc)
-}
-
-export function getPostBySlug(slug: string, locale: Locale) {
-  const post = posts.find((entry) => entry.slug === slug)
-
-  return post ? localizePost(post, locale) : undefined
 }
 
 export function formatPostDate(date: string) {

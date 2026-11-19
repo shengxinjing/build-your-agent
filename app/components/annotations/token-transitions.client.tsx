@@ -33,6 +33,9 @@ export class SmoothPre extends React.Component<CustomPreProps> {
     const transitions = calculateTransitions(this.ref.current!, snapshot)
     transitions.forEach(({ element, keyframes, options }) => {
       const { translateX, translateY, ...kf } = keyframes as any
+      if (kf.color && kf.color[0] === kf.color[1]) {
+        delete kf.color
+      }
       if (translateX && translateY) {
         kf.translate = [
           `${translateX[0]}px ${translateY[0]}px`,
@@ -43,7 +46,7 @@ export class SmoothPre extends React.Component<CustomPreProps> {
         duration: options.duration * MAX_TRANSITION_DURATION,
         delay: options.delay * MAX_TRANSITION_DURATION,
         easing: options.easing,
-        fill: "both",
+        fill: "backwards",
       })
     })
   }

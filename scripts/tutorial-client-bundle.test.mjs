@@ -14,6 +14,10 @@ const liveDemoPath = new URL(
   "../app/build-your-agent/livedemo.tsx",
   import.meta.url,
 )
+const llmSettingsPanelPath = new URL(
+  "../app/build-your-agent/llm-settings-panel.tsx",
+  import.meta.url,
+)
 const articleLoadingPath = new URL(
   "../app/[locale]/build-your-agent/loading.tsx",
   import.meta.url,
@@ -38,8 +42,17 @@ test("the tutorial server sends token data instead of rendered code trees", asyn
 test("the tutorial serializes shared helper files only once", async () => {
   const source = await readFile(articlePagePath, "utf8")
 
-  assert.doesNotMatch(source, /mergeDisplayFiles/)
   assert.match(source, /sharedFiles=\{preparedSharedFiles\}/)
+})
+
+test("the tutorial does not render the user's API token in the code panel", async () => {
+  const [codeStage, settingsPanel] = await Promise.all([
+    readFile(codeStagePath, "utf8"),
+    readFile(llmSettingsPanelPath, "utf8"),
+  ])
+
+  assert.match(codeStage, /apiToken: apiToken \? "YOUR_API_TOKEN" : ""/)
+  assert.match(settingsPanel, /type="password"/)
 })
 
 test("the live demo defers editor and terminal code until it opens", async () => {

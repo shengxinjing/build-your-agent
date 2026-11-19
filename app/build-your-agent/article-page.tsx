@@ -7,6 +7,7 @@ import path from "node:path"
 import { z } from "zod"
 import {
   highlight,
+  type HighlightedCode,
   type RawCode,
 } from "codehike/code"
 import {
@@ -14,6 +15,7 @@ import {
   SelectionProvider,
 } from "codehike/utils/selection"
 import { CodeStage } from "./code-stage"
+import { ImageLightbox } from "./image-lightbox"
 import { LlmSettingsPanel } from "./llm-settings-panel"
 import { SiteHeader } from "@/components/site-header"
 import { HomeHero } from "@/components/hero"
@@ -51,31 +53,21 @@ export async function BuildYourAgentArticlePage({
     buildYourAgentSharedFiles,
     ARTICLE_DIR,
   )
-  const preparedSharedFiles = (
-    await Promise.all(sharedFiles.map(prepareStageFile))
-  ).map((file) => ({
-    copyText: file.copyText,
-    fileName: file.fileName,
-    lang: file.lang,
-    meta: file.meta,
-    runtimeCode: file.runtimeCode,
-  }))
+  const preparedSharedFiles = await Promise.all(
+    sharedFiles.map(async (file) => {
+      // helper.js 不高亮：客户端会按用户的 LLM 设置改写它再展示。
+      // helper.js is not highlighted: the client rewrites it with the user's LLM settings.
+      const { highlightedCode: _unused, ...rest } = await prepareStageFile(file)
+      return rest
+    }),
+  )
   const stageSteps = await Promise.all(
     steps.map(async (step) => {
-      const primaryFile = createPrimaryDisplayFile(step.code)
-      const preparedFile = await prepareStageFile(primaryFile)
-
-      return {
-        entryFileName: primaryFile.fileName,
-        files: [{
-          copyText: preparedFile.copyText,
-          fileName: preparedFile.fileName,
-          lang: preparedFile.lang,
-          meta: preparedFile.meta,
-          runtimeCode: preparedFile.runtimeCode,
-        }],
-        highlightedCodes: [preparedFile.highlightedCode],
-      }
+      // 完整 runtimeCode 不随页面下发，打开 Live Demo 时再按需拉取。
+      // Full runtimeCode is not sent with the page; Live Demo fetches it on demand.
+      const { highlightedCode, runtimeCode: _unused, ...file } =
+        await prepareStageFile(createPrimaryDisplayFile(step.code))
+      return { file, highlightedCode }
     }),
   )
 
@@ -97,9 +89,11 @@ export async function BuildYourAgentArticlePage({
               key={index}
               index={index}
               selectOn={["click", "scroll"]}
-              className="scrolly-step"
+              className={`scrolly-step${
+                step.title ? " scrolly-step--chapter" : ""
+              }`}
             >
-              <h2>{step.title}</h2>
+              {step.title ? <h2>{step.title}</h2> : null}
               <div>{step.children}</div>
             </Selectable>
           ))}
@@ -109,74 +103,60 @@ export async function BuildYourAgentArticlePage({
             <div className="scrolly-stage__frame">
               <CodeStage
                 locale={locale}
-                highlightedCodes={stageSteps.map(
-                  (step) => step.highlightedCodes,
-                )}
                 sharedFiles={preparedSharedFiles}
-                steps={stageSteps.map((step) => ({
-                  entryFileName: step.entryFileName,
-                  files: step.files,
-                }))}
+                steps={stageSteps}
               />
             </div>
           </div>
         </div>
       </SelectionProvider>
       <div className="journal-prose">
-        <h2>{outro.title}</h2>
+        {outro.title ? <h2>{outro.title}</h2> : null}
         {outro.children}
       </div>
 
       <footer className="article-footer">
         <HomeHero locale={locale} />
       </footer>
+      <ImageLightbox label={locale === "cn" ? "关闭图片" : "Close image"} />
     </main>
   )
 }
 
-async function prepareStageFile(
-  file: TutorialDisplayFile,
-) {
-  if (file.fileName === "helper.js") {
-    return {
-      copyText: file.displayValue,
-      fileName: file.fileName,
-      lang: file.lang,
-      meta: file.meta,
-      highlightedCode: null,
-      runtimeCode: file.runtimeValue,
-    }
+async function prepareStageFile(file: TutorialDisplayFile) {
+  const base = {
+    fileName: file.fileName,
+    lang: file.lang,
+    meta: file.meta,
+    runtimeCode: file.runtimeValue,
   }
 
-  const [light, dark] = await Promise.all([
-    highlight(
-      {
-        lang: file.lang,
-        meta: file.meta,
-        value: file.displayValue,
-      },
-      "github-light",
-    ),
-    highlight(
-      {
-        lang: file.lang,
-        meta: file.meta,
-        value: file.displayValue,
-      },
-      "github-dark",
-    ),
-  ])
+  if (
+    file.fileName === "helper.js" ||
+    !parseCodeMeta(file.meta, file.lang).range
+  ) {
+    return { ...base, copyText: file.displayValue, highlightedCode: null }
+  }
 
-  return (
-    {
-      copyText: dark.code,
-      fileName: file.fileName,
-      lang: dark.lang,
-      meta: dark.meta,
-      highlightedCode: { light, dark },
-      runtimeCode: file.runtimeValue,
-    }
+  const highlighted = await highlight(
+    { lang: file.lang, meta: file.meta, value: file.displayValue },
+    "github-from-css",
   )
+
+  // 只保留渲染需要的 tokens/annotations，复制文本由 tokens 还原，省掉重复字符串。
+  // Keep only tokens/annotations; copy text is rebuilt from tokens to avoid duplicate strings.
+  const highlightedCode: HighlightedCode = {
+    annotations: highlighted.annotations,
+    code: "",
+    lang: highlighted.lang,
+    meta: "",
+    style: {},
+    themeName: highlighted.themeName,
+    tokens: highlighted.tokens,
+    value: "",
+  }
+
+  return { ...base, highlightedCode }
 }
 
 function createPrimaryDisplayFile(codeblock: RawCode) {
