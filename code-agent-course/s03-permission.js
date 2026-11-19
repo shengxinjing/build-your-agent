@@ -10,15 +10,8 @@ import {
   isMainModule,
 } from "./helper.js";
 
-// s03：在 s02（多工具）基础上，给工具执行加一道权限门。
-// s03: add a permission gate before tool execution, on top of s02 (multi-tool).
-// 模型负责“想做什么”，权限门负责“这次能不能做”。
-// The model decides what to attempt; the gate decides whether it's allowed this time.
-
 const SYSTEM = `You are a coding agent at ${process.cwd()}. Destructive actions need user approval.`;
 
-// 工具和分发表与 s02 完全一样（沿用上一步）。
-// Tools and dispatch table are identical to s02 (carried over).
 const tools = [
   tool("bash", "Run a shell command.", {
     type: "object",
@@ -59,15 +52,9 @@ const handlers = {
   glob: ({ pattern }) => glob(pattern),
 };
 
-// ── s03 新增：权限门 / NEW in s03: the permission gate ──
-
-// 硬黑名单：永远拒绝。/ Hard deny-list: always refused.
 const DENY = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="];
-// 风险命令：执行前问用户。/ Risky commands: ask the user first.
 const RISKY = ["rm ", "> /etc/", "chmod 777"];
 
-// 权限判定（纯函数，方便测试）：返回 allow / deny / ask 三档之一。
-// Permission check (pure, easy to test): returns one of allow / deny / ask.
 export function checkPermission(name, args = {}) {
   const command = args.command || "";
   if (name === "bash" && DENY.some((p) => command.includes(p))) {
@@ -79,8 +66,6 @@ export function checkPermission(name, args = {}) {
   return { decision: "allow" };
 }
 
-// agent loop：和 s02 完全一样，只在执行工具前插入一道权限门。
-// Same loop as s02, with a single permission gate inserted before tool execution.
 export async function agentLoop(messages, confirm) {
   while (true) {
     const { message } = await callLlm(messages, { system: SYSTEM, tools });
@@ -89,7 +74,7 @@ export async function agentLoop(messages, confirm) {
     messages.push(message);
     for (const call of message.tool_calls) {
       const args = JSON.parse(call.function.arguments || "{}");
-      const gate = checkPermission(call.function.name, args); // ← s03 新增的一道门
+      const gate = checkPermission(call.function.name, args);
 
       let output;
       if (gate.decision === "deny") {
@@ -107,8 +92,6 @@ export async function agentLoop(messages, confirm) {
   }
 }
 
-// 问用户 y/N（confirm 由 runChatCli 注入；缺省视为拒绝）。
-// Ask the user y/N (confirm is injected by runChatCli; default to deny when absent).
 async function approved(confirm, reason, name, args) {
   if (!confirm) return false;
   const answer = await confirm(`⚠ ${reason}: ${name}(${JSON.stringify(args)}) 允许? [y/N] `);

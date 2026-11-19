@@ -13,17 +13,8 @@ import {
   parseFrontmatter,
 } from "./helper.js";
 
-// s07：技能按需加载 —— 用到的时候才花 token。
-// s07: load skills on demand — pay tokens only when used.
-// 两级：① 启动扫描 skills/，把"目录"（名字+描述）注入 SYSTEM，每轮都带但很便宜；
-//       ② 运行时 load_skill(name) 才返回完整 SKILL.md（查注册表，无路径遍历）。
-// Two levels: (1) scan skills/ at startup, inject the catalog (names+descriptions) into SYSTEM —
-//             cheap, carried every turn; (2) load_skill(name) returns the full SKILL.md on demand.
-
 const SKILLS_DIR = path.join(process.cwd(), "skills");
 
-// 扫描 skills/：每个子目录的 SKILL.md → { name, description, content }。
-// Scan skills/: each subdir's SKILL.md → { name, description, content }.
 export function scanSkills(dir = SKILLS_DIR) {
   const registry = {};
   if (!existsSync(dir)) return registry;
@@ -41,13 +32,11 @@ export function scanSkills(dir = SKILLS_DIR) {
 
 export const skillRegistry = scanSkills();
 
-// 第一级：技能目录（只有名字+描述），注入 SYSTEM。
 function listSkills() {
   const all = Object.values(skillRegistry);
   return all.length ? all.map((s) => `- ${s.name}: ${s.description}`).join("\n") : "(no skills found)";
 }
 
-// 第二级：按名字取完整内容（查注册表，不走文件路径 → 无路径遍历）。
 function loadSkill({ name }) {
   const skill = skillRegistry[name];
   return skill ? skill.content : `Skill not found: ${name}`;
@@ -61,7 +50,6 @@ ${listSkills()}
 Use load_skill to get a skill's full content when you need it.`;
 const SUB_SYSTEM = `You are a coding subagent at ${process.cwd()}. Complete the task, then return a concise summary. Do not delegate further.`;
 
-// ── 工具：s06 的 7 个 + 本步新增的 load_skill。/ Tools: s06's 7 + the new load_skill. ──
 const tools = [
   tool("bash", "Run a shell command.", {
     type: "object",
@@ -121,7 +109,6 @@ const tools = [
   }),
 ];
 
-// ── 计划状态（沿用 s05）。/ Plan state (from s05). ──
 let currentTodos = [];
 export function getTodos() {
   return currentTodos;
@@ -143,11 +130,9 @@ const handlers = {
   glob: ({ pattern }) => glob(pattern),
   todo_write: runTodoWrite,
   task: ({ description }, confirm) => spawnSubagent(description, confirm),
-  load_skill: loadSkill, // s07 新增：按需加载技能内容
+  load_skill: loadSkill,
 };
 
-// ── 子代理（沿用 s06）。子代理工具去掉 task/todo_write/load_skill。──
-// Subagent (from s06). Sub-tools exclude task/todo_write/load_skill.
 const SUB_EXCLUDE = ["task", "todo_write", "load_skill"];
 const subTools = tools.filter((t) => !SUB_EXCLUDE.includes(t.function.name));
 const subHandlers = Object.fromEntries(
@@ -177,7 +162,6 @@ async function spawnSubagent(description, confirm) {
 
 export { spawnSubagent };
 
-// ── hook 系统（沿用 s04–s06）。/ Hook system (from s04–s06). ──
 const hooks = { UserPromptSubmit: [], PreToolUse: [], PostToolUse: [], Stop: [] };
 
 function registerHook(event, callback) {
@@ -208,8 +192,6 @@ async function permissionHook(name, args, confirm) {
 
 registerHook("PreToolUse", permissionHook);
 
-// ── agent loop：和 s06 完全一样（load_skill 只是又一个走分发表的工具）。──
-// Same loop as s06 (load_skill is just one more tool dispatched through the table).
 export async function agentLoop(messages, confirm) {
   let roundsSinceTodo = 0;
   while (true) {

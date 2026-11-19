@@ -23,14 +23,9 @@ import {
   cronMatches,
   validateCron,
   colorLog,
+  prepareHistoryForSummary,
 } from "./helper.js";
 
-// s16：团队协议 —— 队友之间要有约定。
-// s16: team protocols — teammates need structured handshakes, not just loose chatter.
-// 在 s15 文件收件箱上加结构化协议：用 request_id 把请求和响应关联起来，状态机 pending→approved/rejected。
-// 两种协议共用一套机制：关机握手（Lead→队友）和计划审批（队友→Lead）。
-
-// ── 技能加载（沿用 s07/s08）。/ Skill loading (from s07/s08). ──
 const SKILLS_DIR = path.join(process.cwd(), "skills");
 
 export function scanSkills(dir = SKILLS_DIR) {
@@ -60,23 +55,14 @@ function loadSkill({ name }) {
   return skill ? skill.content : `Skill not found: ${name}`;
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s09 新增：记忆系统（存储 + 加载 + 提取 + 整理）
-//  NEW in s09: memory system (store + load + extract + consolidate)
-// ═══════════════════════════════════════════════════════════
-
 const MEMORY_TYPES = ["user", "feedback", "project", "reference"];
 
-// 记忆目录可被测试重定向到临时目录（默认 .memory/，已被 gitignore）。
-// The memory dir can be redirected to a tmp dir in tests (defaults to .memory/).
 let memoryDir = path.join(process.cwd(), ".memory");
 export function setMemoryDir(dir) {
   memoryDir = dir;
 }
 const indexPath = () => path.join(memoryDir, "MEMORY.md");
 
-// 写入一条记忆（Markdown + frontmatter），随后重建索引。
-// Write one memory (Markdown + frontmatter), then rebuild the index.
 export function writeMemoryFile(name, type, description, body) {
   mkdirSync(memoryDir, { recursive: true });
   const slug = name.toLowerCase().replace(/[\s/]+/g, "-");
@@ -112,13 +98,10 @@ function rebuildIndex() {
   writeFileSync(indexPath(), lines.length ? `${lines.join("\n")}\n` : "");
 }
 
-// 路径一：索引常驻 SYSTEM。
 export function readMemoryIndex() {
   return existsSync(indexPath()) ? readFileSync(indexPath(), "utf8").trim() : "";
 }
 
-// 路径二：用 LLM 从目录里选出与当前对话相关的记忆；失败则降级到关键词匹配。
-// Use an LLM side-query to pick memories relevant to the current talk; fall back to keyword match.
 export async function selectRelevantMemories(messages, maxItems = 5) {
   const files = listMemoryFiles();
   if (!files.length) return [];
@@ -155,7 +138,6 @@ ${catalog}`,
         .map((i) => files[i].filename);
     }
   } catch {
-    // 降级到关键词匹配
   }
   const keywords = recent.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   return files
@@ -164,7 +146,6 @@ ${catalog}`,
     .map((f) => f.filename);
 }
 
-// 把选中的记忆全文包成一段，供注入当前 user turn。
 export async function loadMemories(messages) {
   const selected = await selectRelevantMemories(messages);
   if (!selected.length) return "";
@@ -174,8 +155,6 @@ export async function loadMemories(messages) {
   return parts.join("\n\n");
 }
 
-// 写入：每轮结束后用 LLM 从对话里提取新记忆（已有的跳过）。返回新增条数。
-// Extract new memories from the dialogue after each turn (skip ones already covered).
 export async function extractMemories(messages) {
   const dialogue = messages
     .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
@@ -229,8 +208,6 @@ ${dialogue}`,
   }
 }
 
-// 整理：文件数到阈值就用 LLM 去重/合并矛盾/淘汰过时（教学版用文件数阈值，CC 用更复杂的门控）。
-// Consolidate: when file count hits the threshold, let the LLM dedup/merge/prune.
 const CONSOLIDATE_THRESHOLD = 10;
 export async function consolidateMemories() {
   const files = listMemoryFiles();
@@ -270,12 +247,9 @@ ${catalog}`,
     }
     console.log(`[Memory: consolidated ${files.length} → ${items.length} memories]`);
   } catch {
-    // 整理失败就保持原样
   }
 }
 
-// 把相关记忆临时拼到最近一条字符串 user 消息前面（只用于本次请求，不写回历史 → 不破坏 cache）。
-// Prepend relevant memories to the latest string user message (request-only, never persisted).
 function buildRequest(messages, memoriesContent) {
   if (!memoriesContent) return messages;
   let idx = -1;
@@ -291,17 +265,11 @@ function buildRequest(messages, memoriesContent) {
   return copy;
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s12 新增：任务系统（持久化的依赖图：.tasks/{id}.json + blockedBy）
-//  NEW in s12: a file-persisted task graph (.tasks/{id}.json + blockedBy deps)
-// ═══════════════════════════════════════════════════════════
-
-// 任务目录可被测试重定向（默认 .tasks/，已被 gitignore）。
 let tasksDir = path.join(process.cwd(), ".tasks");
 export function setTasksDir(dir) {
   tasksDir = dir;
 }
-let taskSeq = 0; // 进程内自增，保证同毫秒创建多个任务也不撞 id
+let taskSeq = 0;
 const taskPath = (id) => path.join(tasksDir, `${id}.json`);
 
 function saveTask(task) {
@@ -312,7 +280,6 @@ function loadTask(id) {
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
-// 创建任务：写一个 JSON 文件（status=pending）；blockedBy 声明上游依赖。
 export function createTask(subject, description = "", blockedBy = []) {
   const id = `task_${Date.now()}_${String(taskSeq++).padStart(4, "0")}`;
   const task = { id, subject, description, status: "pending", owner: null, blockedBy };
@@ -328,13 +295,11 @@ export function listTasks() {
     .map((f) => JSON.parse(readFileSync(path.join(tasksDir, f), "utf8")));
 }
 
-// 依赖检查：blockedBy 必须全部 completed（缺失的依赖按未完成处理）。
 export function canStart(id) {
   const task = loadTask(id);
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
-// 认领：pending → in_progress，设 owner；已认领或依赖未完成则拒绝。
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
@@ -348,7 +313,6 @@ export function claimTask(id, owner = "agent") {
   return `Claimed ${id} (${task.subject})`;
 }
 
-// 完成：in_progress → completed，并报告刚被解锁的下游任务。
 export function completeTask(id) {
   const task = loadTask(id);
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
@@ -362,7 +326,6 @@ export function completeTask(id) {
   return msg;
 }
 
-// 工具 handlers（list/get/create 有点格式化逻辑，claim/complete 直接转发）。
 function runCreateTask({ subject, description, blockedBy }) {
   const task = createTask(subject, description || "", blockedBy || []);
   const deps = task.blockedBy.length ? ` (blockedBy: ${task.blockedBy.join(", ")})` : "";
@@ -388,19 +351,13 @@ function runGetTask({ task_id }) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s13 新增：后台任务（慢操作异步执行 + 通知注入）
-//  NEW in s13: background tasks (async slow ops + notification injection)
-// ═══════════════════════════════════════════════════════════
-
 let bgCounter = 0;
-const backgroundTasks = new Map(); // bgId → { command, status, result }
+const backgroundTasks = new Map();
 export function resetBackgroundTasks() {
   backgroundTasks.clear();
   bgCounter = 0;
 }
 
-// 启发式兜底：看起来要跑很久（>30s）的命令。模型显式传 run_in_background 时用不到它。
 const SLOW_KEYWORDS = ["install", "build", "test", "deploy", "compile", "pytest", "make", "cargo"];
 const BACKGROUND_POLL_MS = 25;
 export function isSlowOperation(name, args) {
@@ -409,18 +366,14 @@ export function isSlowOperation(name, args) {
   return SLOW_KEYWORDS.some((kw) => cmd.includes(kw));
 }
 
-// 模型显式请求优先，启发式兜底。/ Model's explicit request wins; heuristic is the fallback.
 export function shouldRunBackground(name, args) {
   return Boolean(args.run_in_background) || isSlowOperation(name, args);
 }
 
-// 丢后台：JS 单线程，用未 await 的 Promise 推迟执行，完成后回填结果（派发本身不阻塞主循环）。
-// Fire it off: single-threaded JS → a non-awaited Promise; backfill the result when it settles.
 export function startBackgroundTask(name, args, run) {
   bgCounter += 1;
   const bgId = `bg_${String(bgCounter).padStart(4, "0")}`;
   backgroundTasks.set(bgId, { command: args.command || name, status: "running", result: "" });
-  // 教学 trace：后台任务已经派发，主循环不用原地等待。
   console.log(`  [background] dispatched ${bgId}: ${preview(args.command || name, 60)}`);
   Promise.resolve()
     .then(run)
@@ -453,8 +406,6 @@ function runBashInBackground(command) {
   });
 }
 
-// 收集已完成的后台任务 → <task_notification>，并从表里移除（独立事件，不复用原 tool_call_id）。
-// Collect finished tasks as <task_notification> and drop them (a separate event, not a tool reply).
 export function collectBackgroundResults() {
   const notifications = [];
   for (const [bgId, task] of backgroundTasks) {
@@ -489,7 +440,6 @@ function injectBackgroundNotifications(messages) {
   const notifications = collectBackgroundResults();
   for (const notification of notifications) {
     messages.push({ role: "user", content: notification });
-    // 教学 trace：后台任务完成后，以通知形式重新注入对话。
     console.log(`  [task notification] ${notificationTaskId(notification)} done → inject <task_notification>`);
   }
   return notifications.length;
@@ -501,20 +451,14 @@ async function waitForBackgroundTick() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s14 新增：定时调度（5 段式 cron + 到点任务队列）
-//  NEW in s14: a cron scheduler (5-field cron + a fired-job queue)
-// ═══════════════════════════════════════════════════════════
-
-// 持久化路径可被测试重定向（默认 .scheduled_tasks.json，已 gitignore）。
 let cronStorePath = path.join(process.cwd(), ".scheduled_tasks.json");
 export function setCronStorePath(p) {
   cronStorePath = p;
 }
 
-const scheduledJobs = new Map(); // id → { id, cron, prompt, recurring, durable }
-const cronQueue = []; // 到点的 job 在这里排队，等 agent loop 消费
-const lastFired = new Map(); // id → "Y-M-D H:M"，同一分钟不重复触发
+const scheduledJobs = new Map();
+const cronQueue = [];
+const lastFired = new Map();
 let cronSeq = 0;
 let cronProcessing = false;
 let agentRunning = false;
@@ -537,17 +481,15 @@ export function loadDurableJobs() {
     let count = 0;
     for (const j of JSON.parse(readFileSync(cronStorePath, "utf8"))) {
       if (!validateCron(j.cron)) {
-        scheduledJobs.set(j.id, j); // 跳过非法表达式
+        scheduledJobs.set(j.id, j);
         count += 1;
       }
     }
     if (count) console.log(`  [cron] loaded ${count} durable job(s)`);
   } catch {
-    // 坏文件不致命
   }
 }
 
-// 注册 / 取消 / 列出。
 export function scheduleJob(cron, prompt, recurring = true, durable = true) {
   const err = validateCron(cron);
   if (err) return err;
@@ -568,8 +510,6 @@ export function listCronJobs() {
   return [...scheduledJobs.values()];
 }
 
-// 调度"心跳"：给定当前时间，把到点的 job 入队（同分钟不重复），一次性任务触发后删除。
-// 独立于 agent loop —— 真实运行里由 main() 的 setInterval 每秒驱动。
 export function cronTick(now = new Date()) {
   const marker = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}`;
   for (const job of [...scheduledJobs.values()]) {
@@ -585,12 +525,10 @@ export function cronTick(now = new Date()) {
         if (job.durable) saveDurableJobs();
       }
     } catch {
-      // 单个坏 job 不拖垮整个调度
     }
   }
 }
 
-// agent loop 在每轮开头消费这个队列。/ The agent loop drains this at the top of each iteration.
 export function consumeCronQueue() {
   return cronQueue.splice(0);
 }
@@ -628,7 +566,6 @@ export async function processCronQueue(confirm = async () => "n") {
   }
 }
 
-// cron 工具 handlers。
 function runScheduleCron({ cron, prompt, recurring = true, durable = true }) {
   const result = scheduleJob(cron, prompt, recurring, durable);
   return typeof result === "string" ? `Error: ${result}` : `Scheduled ${result.id}: '${cron}' → ${prompt}`;
@@ -647,13 +584,6 @@ function runCancelCron({ job_id }) {
   return cancelJob(job_id);
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s15 新增：Agent 团队（文件收件箱 MessageBus + 队友子循环）
-//  NEW in s15: agent teams (file mailboxes + teammate subloops)
-// ═══════════════════════════════════════════════════════════
-
-// MessageBus：每个 agent 一个 .jsonl 收件箱。发=往对方文件 append；读=读完即删（消费式）。
-// 教学版不加文件锁；真实 CC 用 proper-lockfile 防并发写冲突。
 let mailboxDir = path.join(process.cwd(), ".mailboxes");
 export function setMailboxDir(dir) {
   mailboxDir = dir;
@@ -671,7 +601,7 @@ export function readInbox(agent) {
   const file = path.join(mailboxDir, `${agent}.jsonl`);
   if (!existsSync(file)) return [];
   const msgs = readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
-  rmSync(file); // 消费式：读完删除
+  rmSync(file);
   return msgs;
 }
 
@@ -683,13 +613,10 @@ const TEAMMATE_TURNS = 20;
 const TEAMMATE_IDLE_TICKS = 20;
 const TEAMMATE_IDLE_MS = 250;
 
-// 启动一个队友。区别于 s06 一次性子代理：队友会在后台继续跑，并用 send_message 回话。
-// JS 没有 Python 线程；这里用不 await 的 Promise 模拟后台 teammate。
 export function spawnTeammate(name, role, prompt, confirm) {
   if (activeTeammates.has(name)) return `Teammate '${name}' already exists`;
   activeTeammates.add(name);
   const system = `You are '${name}', a ${role}. Use tools to complete tasks. Send results via send_message to 'lead'.`;
-  // 队友工具：bash/read/write + send_message。没有 spawn_teammate → 队友不能再拉队友（防嵌套）。
   const teamTools = [
     tool("bash", "Run a shell command.", {
       type: "object",
@@ -734,7 +661,6 @@ export function spawnTeammate(name, role, prompt, confirm) {
     let idleTicks = 0;
     let pendingShutdown = null;
     for (let turn = 0; turn < TEAMMATE_TURNS; turn += 1) {
-      // s16：先按类型分发协议消息（shutdown_request → 回应并停；计划审批结果 → 注入），其余当普通消息。
       const inbox = readInbox(name);
       const nonProtocol = [];
       for (const msg of inbox) {
@@ -783,14 +709,14 @@ export function spawnTeammate(name, role, prompt, confirm) {
       for (const call of message.tool_calls) {
         const toolName = call.function.name;
         const args = JSON.parse(call.function.arguments || "{}");
-        const blocked = await triggerHooks("PreToolUse", toolName, args, confirm); // 队友工具也走权限门
+        const blocked = await triggerHooks("PreToolUse", toolName, args, confirm);
         const handler = teamHandlers[toolName];
         const output =
           blocked != null ? String(blocked) : handler ? handler(args) : `Unknown tool: ${toolName}`;
         messages.push({ role: "tool", tool_call_id: call.id, content: String(output) });
       }
     }
-    sendMessage(name, "lead", summary, "result"); // 完成后向 Lead 汇报
+    sendMessage(name, "lead", summary, "result");
   };
 
   Promise.resolve()
@@ -805,7 +731,6 @@ export function spawnTeammate(name, role, prompt, confirm) {
   return `Teammate '${name}' spawned as ${role}`;
 }
 
-// Lead 的团队工具 handlers。
 function runSpawnTeammate({ name, role, prompt }, confirm) {
   return spawnTeammate(name, role, prompt, confirm);
 }
@@ -814,7 +739,7 @@ function runSendMessage({ to, content }) {
   return `Sent to ${to}`;
 }
 function runCheckInbox() {
-  const msgs = consumeLeadInbox(true); // 读 + 路由协议响应
+  const msgs = consumeLeadInbox(true);
   if (!msgs.length) return "(inbox empty)";
   return msgs
     .map((m) => {
@@ -825,14 +750,7 @@ function runCheckInbox() {
     .join("\n");
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s16 新增：团队协议（request_id 关联的请求-响应 + 状态机）
-//  NEW in s16: team protocols (request_id-correlated request/response + FSM)
-// ═══════════════════════════════════════════════════════════
-
-// 一条协议请求的状态：pending → approved / rejected。两种协议共用这套机制。
-// One request's state machine: pending → approved / rejected. Two protocols, one mechanism.
-export const pendingRequests = new Map(); // request_id → { request_id, type, sender, target, status, payload }
+export const pendingRequests = new Map();
 let reqSeq = 0;
 export function resetProtocol() {
   pendingRequests.clear();
@@ -840,20 +758,16 @@ export function resetProtocol() {
 }
 const newRequestId = () => `req_${String(reqSeq++).padStart(4, "0")}`;
 
-// 用 request_id 把响应关联回原请求；校验响应类型与请求类型一致，已结案的忽略。
-// Correlate a response to its request by id; validate the type matches; ignore if already resolved.
 export function matchResponse(responseType, requestId, approve) {
   const state = pendingRequests.get(requestId);
   if (!state) return;
   if (state.type === "shutdown" && responseType !== "shutdown_response") return;
   if (state.type === "plan_approval" && responseType !== "plan_approval_response") return;
-  if (state.status !== "pending") return; // 已 approved/rejected，忽略重复
+  if (state.status !== "pending") return;
   state.status = approve ? "approved" : "rejected";
   colorLog(approve ? "green" : "yellow", `[protocol] ${requestId} ${state.status}`);
 }
 
-// 统一消费 Lead 收件箱：先把协议响应路由进状态机，再返回所有消息（check_inbox 和主循环都用它）。
-// Unified lead-inbox consumer: route protocol responses into the FSM first, then return all messages.
 export function consumeLeadInbox(routeProtocol = true) {
   const msgs = readInbox("lead");
   if (routeProtocol) {
@@ -868,7 +782,6 @@ export function consumeLeadInbox(routeProtocol = true) {
   return msgs;
 }
 
-// 队友提交计划等 Lead 审批（协议层请求，不是代码层门控——队友这边仍会继续跑）。
 function teammateSubmitPlan(fromName, plan) {
   const reqId = newRequestId();
   pendingRequests.set(reqId, { request_id: reqId, type: "plan_approval", sender: fromName, target: "lead", status: "pending", payload: plan });
@@ -877,7 +790,6 @@ function teammateSubmitPlan(fromName, plan) {
   return `Plan submitted (${reqId}). Waiting for approval...`;
 }
 
-// Lead 协议工具：请求关机 / 请求计划 / 审批计划。
 function runRequestShutdown({ teammate }) {
   const reqId = newRequestId();
   pendingRequests.set(reqId, { request_id: reqId, type: "shutdown", sender: "lead", target: teammate, status: "pending", payload: "" });
@@ -897,10 +809,6 @@ function runReviewPlan({ request_id, approve, feedback = "" }) {
   sendMessage("lead", state.sender, feedback || (approve ? "Approved" : "Rejected"), "plan_approval_response", { request_id, approve });
   return `Plan ${approve ? "approved" : "rejected"} (${request_id})`;
 }
-
-// ═══════════════════════════════════════════════════════════
-//  压缩管线（沿用 s08）/ Compaction pipeline (from s08)
-// ═══════════════════════════════════════════════════════════
 
 const TRANSCRIPT_DIR = path.join(process.cwd(), ".transcripts");
 const TOOL_RESULTS_DIR = path.join(process.cwd(), ".task_outputs", "tool-results");
@@ -971,7 +879,7 @@ function writeTranscript(messages) {
 }
 
 async function summarizeHistory(messages) {
-  const conversation = JSON.stringify(messages).slice(0, 80000);
+  const conversation = prepareHistoryForSummary(messages);
   const prompt = `Summarize this coding-agent conversation so work can continue.
 Preserve: 1) current goal, 2) key findings/decisions, 3) files read/changed, 4) remaining work, 5) user constraints.
 Be compact but concrete.
@@ -998,40 +906,31 @@ export async function reactiveCompact(messages) {
 const isPromptTooLong = (error) =>
   /prompt.*too.*long|too many tokens|context.*length/i.test(String(error.message));
 
-// ═══════════════════════════════════════════════════════════
-//  s11 新增：错误恢复（截断升级 / 上下文超限压缩 / 瞬态退避重试）
-//  NEW in s11: error recovery (truncation escalate / prompt-too-long compact / transient backoff)
-// ═══════════════════════════════════════════════════════════
-
 const DEFAULT_MAX_TOKENS = 8000;
 const ESCALATED_MAX_TOKENS = 64000;
-const MAX_RECOVERY_RETRIES = 3; // 续写次数上限
-const MAX_RETRIES = 10; // 瞬态错误退避次数上限
+const MAX_RECOVERY_RETRIES = 3;
+const MAX_RETRIES = 10;
 const BASE_DELAY_MS = 500;
-const MAX_CONSECUTIVE_529 = 3; // 连续过载达到此数 → 切换备用模型
+const MAX_CONSECUTIVE_529 = 3;
 const CONTINUATION_PROMPT =
   "Output token limit hit. Resume directly — no apology, no recap. Pick up mid-thought.";
 
-// 跨循环跟踪恢复状态。/ Tracks recovery progress across the loop.
 export class RecoveryState {
   constructor() {
-    this.escalated = false; // 是否已把 max_tokens 升到 64K
-    this.recoveryCount = 0; // 已续写次数
-    this.consecutive529 = 0; // 连续 529 次数
-    this.attemptedReactiveCompact = false; // 是否已应急压缩过
-    this.currentModel = null; // null = provider 默认模型；切换后 = 备用模型
+    this.escalated = false;
+    this.recoveryCount = 0;
+    this.consecutive529 = 0;
+    this.attemptedReactiveCompact = false;
+    this.currentModel = null;
   }
 }
 
-// 指数退避 + 抖动；服务器给了 Retry-After 就优先用它。
-// Exponential backoff with jitter; a Retry-After value wins if present.
 export function retryDelay(attempt, retryAfter) {
   if (retryAfter) return retryAfter;
   const base = Math.min(BASE_DELAY_MS * 2 ** attempt, 32000);
   return base + Math.random() * base * 0.25;
 }
 
-// 睡眠函数（测试可替换为立即返回，避免真实等待）。/ Sleep (tests swap in an instant no-op).
 let sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export function setSleepFn(fn) {
   sleep = fn;
@@ -1040,8 +939,6 @@ export function setSleepFn(fn) {
 const isRateLimit = (msg) => /\b429\b|rate.?limit/i.test(msg);
 const isOverloaded = (msg) => /\b529\b|overloaded/i.test(msg);
 
-// 路径③：瞬态错误（429/529）→ 退避重试；连续 529 达上限且配了备用模型就切换。其它错误原样抛给外层。
-// Path 3: transient errors → backoff retry; switch to the fallback model after enough 529s. Others re-thrown.
 export async function withRetry(fn, state) {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
     try {
@@ -1065,19 +962,12 @@ export async function withRetry(fn, state) {
         await sleep(retryDelay(attempt));
         continue;
       }
-      throw error; // 非瞬态 → 交给外层 try/catch
+      throw error;
     }
   }
   throw new Error(`Max retries (${MAX_RETRIES}) exceeded`);
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s10 新增：system prompt 运行时分段组装 + 缓存（替换 s09 的 buildSystem）
-//  NEW in s10: assemble the system prompt from sections at runtime, with caching
-// ═══════════════════════════════════════════════════════════
-
-// 每个 section 独立维护：(context) => string | null（返回 null 表示本轮不加载）。
-// Each section is independent: (context) => string | null (null = skip this turn).
 const PROMPT_SECTIONS = {
   identity: () =>
     `You are a coding agent at ${process.cwd()}. Use tools to solve tasks. Before a multi-step task, use todo_write to plan and update status as you go. For a complex sub-problem, use the task tool to spawn a subagent. When delegating to a teammate, prefer check_inbox for teammate updates; do not use sleep loops to wait for files unless the user explicitly asks you to wait.`,
@@ -1092,14 +982,10 @@ const PROMPT_SECTIONS = {
 };
 const SECTION_ORDER = ["identity", "tools", "skills", "compaction", "memory"];
 
-// 按 context 的真实状态选段拼接（不靠消息里的关键词）。
-// Select + join sections by the real state in context (not message keywords).
 export function assembleSystemPrompt(context) {
   return SECTION_ORDER.map((key) => PROMPT_SECTIONS[key](context)).filter(Boolean).join("\n\n");
 }
 
-// context 没变就复用上次结果（确定性 JSON key；buildContext 的 key 顺序固定，无需排序）。
-// Reuse the last result when context is unchanged (deterministic JSON key, not hash()).
 let lastContextKey = null;
 let lastSystemPrompt = null;
 export function getSystemPrompt(context) {
@@ -1114,8 +1000,6 @@ export function resetSystemPromptCache() {
   lastSystemPrompt = null;
 }
 
-// 从真实状态派生 context：注册了哪些工具、有没有技能、记忆索引内容。
-// Derive context from real state: registered tools, skills present, memory index.
 export function buildContext() {
   const skills = listSkills();
   return {
@@ -1127,7 +1011,6 @@ export function buildContext() {
 
 const SUB_SYSTEM = `You are a coding subagent at ${process.cwd()}. Complete the task, then return a concise summary. Do not delegate further.`;
 
-// ── 工具：沿用 s08 的 9 个（bash/read/write/edit/glob/todo_write/task/load_skill/compact）。──
 const tools = [
   tool("bash", "Run a shell command. Set run_in_background for slow ops (install/build/test).", {
     type: "object",
@@ -1189,7 +1072,6 @@ const tools = [
     type: "object",
     properties: { focus: { type: "string" } },
   }),
-  // s12：任务系统工具（持久化、有依赖，区别于内存版 todo_write）。
   tool("create_task", "Create a persistent task with optional blockedBy dependencies.", {
     type: "object",
     properties: {
@@ -1218,7 +1100,6 @@ const tools = [
     properties: { task_id: { type: "string" } },
     required: ["task_id"],
   }),
-  // s14：定时调度工具。
   tool("schedule_cron", "Schedule a cron job (5-field: min hour dom month dow) to inject a prompt when it fires.", {
     type: "object",
     properties: {
@@ -1235,7 +1116,6 @@ const tools = [
     properties: { job_id: { type: "string" } },
     required: ["job_id"],
   }),
-  // s15：团队工具（Lead 用）。
   tool("spawn_teammate", "Spawn a teammate agent (its own multi-round loop) to help with a task.", {
     type: "object",
     properties: { name: { type: "string" }, role: { type: "string" }, prompt: { type: "string" } },
@@ -1247,7 +1127,6 @@ const tools = [
     required: ["to", "content"],
   }),
   tool("check_inbox", "Check the lead's inbox for teammate messages.", { type: "object", properties: {} }),
-  // s16：团队协议工具（Lead 用）。
   tool("request_shutdown", "Ask a teammate to shut down gracefully (handshake).", {
     type: "object",
     properties: { teammate: { type: "string" } },
@@ -1269,7 +1148,6 @@ const tools = [
   }),
 ];
 
-// ── 计划状态（沿用 s05）。/ Plan state (from s05). ──
 let currentTodos = [];
 export function getTodos() {
   return currentTodos;
@@ -1292,27 +1170,22 @@ const handlers = {
   todo_write: runTodoWrite,
   task: ({ description }, confirm) => spawnSubagent(description, confirm),
   load_skill: loadSkill,
-  // s12：任务系统（持久化依赖图）。
   create_task: runCreateTask,
   list_tasks: runListTasks,
   get_task: runGetTask,
   claim_task: ({ task_id }) => claimTask(task_id),
   complete_task: ({ task_id }) => completeTask(task_id),
-  // s14：定时调度。
   schedule_cron: runScheduleCron,
   list_crons: runListCrons,
   cancel_cron: runCancelCron,
-  // s15：团队。
   spawn_teammate: runSpawnTeammate,
   send_message: runSendMessage,
   check_inbox: runCheckInbox,
-  // s16：团队协议。
   request_shutdown: runRequestShutdown,
   request_plan: runRequestPlan,
   review_plan: runReviewPlan,
 };
 
-// ── 子代理（沿用 s06–s08）。──
 const SUB_EXCLUDE = [
   "task",
   "todo_write",
@@ -1353,7 +1226,6 @@ async function spawnSubagent(description, confirm) {
 
 export { spawnSubagent };
 
-// ── hook 系统（沿用 s04–s08）。──
 const hooks = { UserPromptSubmit: [], PreToolUse: [], PostToolUse: [], Stop: [] };
 
 function registerHook(event, callback) {
@@ -1384,12 +1256,10 @@ async function permissionHook(name, args, confirm) {
 
 registerHook("PreToolUse", permissionHook);
 
-// ── agent loop：s11 在 s10 基础上，把 LLM 调用包进 withRetry + 三条恢复路径。──
-// s11 builds on s10: wrap the LLM call in withRetry + three recovery paths.
 export async function agentLoop(messages, confirm) {
   let roundsSinceTodo = 0;
-  const state = new RecoveryState(); // s11：跟踪截断升级 / 压缩 / 529 / 模型切换
-  let maxTokens = DEFAULT_MAX_TOKENS; // s11：输出截断时升级到 64K
+  const state = new RecoveryState();
+  let maxTokens = DEFAULT_MAX_TOKENS;
   let context = buildContext();
   let system = getSystemPrompt(context);
   const memoriesContent = await loadMemories(messages);
@@ -1398,13 +1268,9 @@ export async function agentLoop(messages, confirm) {
 
   while (true) {
     turn += 1;
-    // 教学 trace：每次 LLM 调用算一个 turn。
-    // console.log(`\n[turn ${turn}]`);
     injectBackgroundNotifications(messages);
 
-    // s14：每轮开头消费到点的定时任务，注入为 [Scheduled] 消息。
     injectCronJobs(messages);
-    // s16：统一消费 Lead 收件箱（先路由协议响应进状态机），再把消息注入历史。
     for (const m of consumeLeadInbox()) {
       messages.push({ role: "user", content: `[Inbox] From ${m.from}: ${m.content.slice(0, 200)}` });
     }
@@ -1413,7 +1279,7 @@ export async function agentLoop(messages, confirm) {
       roundsSinceTodo = 0;
     }
 
-    preCompress = messages.map((m) => ({ role: m.role, content: m.content })); // s09：压缩前快照（提取用）
+    preCompress = messages.map((m) => ({ role: m.role, content: m.content }));
 
     apply(messages, toolResultBudget(messages));
     apply(messages, snipCompact(messages));
@@ -1422,7 +1288,6 @@ export async function agentLoop(messages, confirm) {
 
     let choice;
     try {
-      // s11：withRetry 处理 429/529 退避；相关记忆仍临时拼进请求（不写回 messages）。
       choice = await withRetry(
         () =>
           callLlm(buildRequest(messages, memoriesContent), {
@@ -1434,7 +1299,6 @@ export async function agentLoop(messages, confirm) {
         state,
       );
     } catch (error) {
-      // 路径②：上下文超限 → 应急压缩一次再重试，仍失败就退出。
       if (isPromptTooLong(error) && !state.attemptedReactiveCompact) {
         apply(messages, await reactiveCompact(messages));
         state.attemptedReactiveCompact = true;
@@ -1446,8 +1310,6 @@ export async function agentLoop(messages, confirm) {
 
     const message = choice.message;
 
-    // 路径①：输出被截断（finish_reason "length"）→ 先把上限升到 64K 重试同一请求；
-    // 仍截断则保存输出 + 注入续写提示，最多续写 MAX_RECOVERY_RETRIES 次。
     if (choice.finish_reason === "length") {
       if (!state.escalated) {
         maxTokens = ESCALATED_MAX_TOKENS;
@@ -1467,9 +1329,6 @@ export async function agentLoop(messages, confirm) {
       if (injectBackgroundNotifications(messages)) continue;
       await waitForBackgroundTick();
       if (injectBackgroundNotifications(messages)) continue;
-      // 教学 trace：没有 tool_calls 时，模型给出了最终文本。
-      // console.log(`  [assistant] ${preview(message.content || "(no text)", 100)}`);
-      // s09：对话告一段落 → 从压缩前快照提取新记忆 + 必要时整理。
       await extractMemories(preCompress);
       await consolidateMemories();
       return message.content || "";
@@ -1482,7 +1341,6 @@ export async function agentLoop(messages, confirm) {
       const name = call.function.name;
       const args = JSON.parse(call.function.arguments || "{}");
       const runInBackground = shouldRunBackground(name, args);
-      // 教学 trace：模型这轮想调用哪个工具，以及是否进入后台。
       console.log(`> ${describeToolCall(name, args, runInBackground)}`);
 
       if (name === "compact") {
@@ -1496,14 +1354,11 @@ export async function agentLoop(messages, confirm) {
       if (blocked != null) {
         output = String(blocked);
       } else if (runInBackground) {
-        // s13：慢操作丢后台，先回占位 tool_result；真正结果稍后以通知注入。
         const bgId = startBackgroundTask(name, args, () => {
           const handler = handlers[name];
           if (name === "bash") return runBashInBackground(args.command);
           return handler ? handler(args, confirm) : `Unknown tool: ${name}`;
         });
-        // 教学 trace：慢工具先返回后台任务 id。
-        // console.log(`  [background start] ${bgId}`);
         output = `[Background task ${bgId} started] ${args.command || name}. Result will arrive when complete.`;
       } else {
         const handler = handlers[name];
@@ -1512,16 +1367,12 @@ export async function agentLoop(messages, confirm) {
 
       if (name === "todo_write") roundsSinceTodo = 0;
       messages.push({ role: "tool", tool_call_id: call.id, content: String(output) });
-      // 教学 trace：工具结果已经回灌给模型。
-      // console.log(`  [tool result] ${preview(output, 120)}`);
     }
     if (compacted) continue;
 
-    // s13：把已完成的后台任务作为独立 user 消息注入（OpenAI 格式下不复用 tool_call_id）。
     await waitForBackgroundTick();
     injectBackgroundNotifications(messages);
 
-    // s10：工具轮结束 → 重新派生 context；变了就重组装，没变命中缓存。
     context = buildContext();
     system = getSystemPrompt(context);
   }
@@ -1540,13 +1391,13 @@ async function runInteractiveAgentTurn(messages, confirm) {
 }
 
 async function main() {
-  loadDurableJobs(); // s14：恢复持久化的定时任务
+  loadDurableJobs();
   console.log("  [queue processor] started");
   const ticker = setInterval(() => {
-    cronTick(new Date()); // 独立调度心跳，每秒一次
-    processCronQueue(async () => "n"); // agent 空闲时自动交付到点任务
+    cronTick(new Date());
+    processCronQueue(async () => "n");
   }, 1000);
-  ticker.unref?.(); // 不阻止进程退出
+  ticker.unref?.();
   await runChatCli({
     promptLabel: "s16 >> ",
     onPrompt: async ({ prompt, messages, ask }) => {

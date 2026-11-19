@@ -2,6 +2,7 @@ import { test, expect, afterAll } from "vitest";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { withFakeLlm } from "./fake-llm.js";
+import { prepareHistoryForSummary } from "./helper.js";
 import {
   agentLoop,
   snipCompact,
@@ -41,6 +42,20 @@ afterAll(() => {
   for (const dir of [".transcripts", ".task_outputs"]) {
     rmSync(path.join(process.cwd(), dir), { recursive: true, force: true });
   }
+});
+
+test("摘要输入同时保留稳定头部和最新尾部", () => {
+  const messages = [
+    { role: "user", content: "FIRST_CONSTRAINT" },
+    { role: "assistant", content: "x".repeat(500) },
+    { role: "user", content: "LATEST_TASK_STATE" },
+  ];
+  const conversation = prepareHistoryForSummary(messages, 180, 60);
+
+  expect(conversation.length).toBeLessThanOrEqual(180);
+  expect(conversation).toContain("FIRST_CONSTRAINT");
+  expect(conversation).toContain("LATEST_TASK_STATE");
+  expect(conversation).toContain("middle history omitted");
 });
 
 // L1：消息太多 → 裁中间，保留头 3 + 尾部。
