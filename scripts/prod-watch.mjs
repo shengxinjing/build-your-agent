@@ -9,9 +9,11 @@ const port = process.env.PORT || "3001"
 
 const watchTargets = [
   "app",
+  "code-agent-course",
   "components",
   "lib",
   "public",
+  "scripts",
   "mdx-components.tsx",
   "next.config.mjs",
   "postcss.config.js",
@@ -80,7 +82,7 @@ async function buildProject(reason) {
 
   isBuilding = true
   log(`building (${reason})`)
-  const result = await runCommand("npm", ["run", "build"])
+  const result = await runCommand("pnpm", ["run", "build"])
   isBuilding = false
 
   if (result.code === 0) {
@@ -112,7 +114,7 @@ async function restartServer() {
   }
 
   startProcess = spawn(
-    "npm",
+    "pnpm",
     ["run", "start", "--", "--port", String(port)],
     {
       cwd: root,
