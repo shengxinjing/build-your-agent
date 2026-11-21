@@ -9,6 +9,7 @@ import {
   buildAgentSnapshots,
   parseAgentSteps,
 } from "./agent-steps.mjs"
+import { getTutorialRuntimeSteps } from "../lib/tutorial-runtime-server.ts"
 
 test("applyAgentPatch applies one exact mini diff", () => {
   const source = "const answer = 1;\nconsole.log(answer);\n"
@@ -66,6 +67,37 @@ test("parseAgentSteps reads titles, explanations, and patches", () => {
   }])
 })
 
+test("applyAgentPatch builds a file from an empty source", () => {
+  const patch = [
+    "@@",
+    "+import { callLlm } from \"./helper.js\";",
+  ].join("\n")
+
+  assert.deepEqual(applyAgentPatch("", patch), {
+    code: "import { callLlm } from \"./helper.js\";\n",
+    changedLines: 1,
+    focusRanges: [{ start: 1, end: 1 }],
+  })
+})
+
+test("applyAgentPatch focuses the line after removed code when a frame only removes", () => {
+  const source = "const a = 1;\nconst debug = true;\nconst b = 2;\n"
+  const patch = ["@@", " const a = 1;", "-const debug = true;", " const b = 2;"].join("\n")
+
+  assert.deepEqual(applyAgentPatch(source, patch), {
+    code: "const a = 1;\nconst b = 2;\n",
+    changedLines: 1,
+    focusRanges: [{ start: 2, end: 2 }],
+  })
+})
+
+test("applyAgentPatch rejects a context-free patch on a non-empty source", () => {
+  assert.throws(
+    () => applyAgentPatch("const value = 1;\n", "@@\n+const value = 2;"),
+    /needs at least one context or removed line/,
+  )
+})
+
 test("buildAgentSnapshots applies steps in order and reaches the target", () => {
   const steps = [
     {
@@ -107,7 +139,7 @@ test("buildAgentSnapshots rejects a sequence that misses the target", () => {
   )
 })
 
-test("s01 evolves from s00 in three focused verified steps", async () => {
+test("s01 evolves from s00 in six focused verified steps", async () => {
   const [markdown, source, target] = await Promise.all([
     readFile(new URL("../code-agent-course/s01-agent-loop.md", import.meta.url), "utf8"),
     readFile(new URL("../code-agent-course/s00-llm-http.js", import.meta.url), "utf8"),
@@ -115,7 +147,7 @@ test("s01 evolves from s00 in three focused verified steps", async () => {
   ])
   const steps = parseAgentSteps(markdown)
 
-  assert.equal(steps.length, 3)
+  assert.equal(steps.length, 6)
   assert.match(markdown, /## 和上一步的关键代码 diff（不含 helper\.js）/)
   assert.match(markdown, /--- s00-llm-http\.js\n\+\+\+ s01-agent-loop\.js/)
 
@@ -130,7 +162,27 @@ test("s01 evolves from s00 in three focused verified steps", async () => {
   assert.equal(snapshots.at(-1).code, target)
 })
 
-test("the course generator emits three incremental s01 CodeHike steps", async () => {
+test("s00 builds from an empty source in four verified steps", async () => {
+  const [markdown, target] = await Promise.all([
+    readFile(new URL("../code-agent-course/s00-llm-http.md", import.meta.url), "utf8"),
+    readFile(new URL("../code-agent-course/s00-llm-http.js", import.meta.url), "utf8"),
+  ])
+  const steps = parseAgentSteps(markdown)
+
+  assert.equal(steps.length, 4)
+
+  const snapshots = buildAgentSnapshots({
+    source: "",
+    target,
+    steps,
+    maxChangedLines: 40,
+  })
+  assert.ok(snapshots.every((snapshot) => snapshot.changedLines <= 40))
+  assert.ok(snapshots.every((snapshot) => snapshot.focusRanges.length > 0))
+  assert.equal(snapshots.at(-1).code, target)
+})
+
+test("the course generator emits focus-aware s01 CodeHike steps", async () => {
   const root = fileURLToPath(new URL("../", import.meta.url))
   execFileSync(process.execPath, [
     fileURLToPath(new URL("./generate-build-your-agent-content.mjs", import.meta.url)),
@@ -141,28 +193,97 @@ test("the course generator emits three incremental s01 CodeHike steps", async ()
     readFile(new URL("../code-agent-course/s01-agent-loop.js", import.meta.url), "utf8"),
   ])
   const section = content.match(
-    /## !!steps s01[\s\S]*?(?=\n## !!steps s02)/,
+    /## !!steps s01：[\s\S]*?(?=\n## !!steps s02：)/,
   )?.[0] || ""
-  const headings = section.match(/^## !!steps s01\.\d+/gm) || []
+  const headings = section.match(/^## !!steps(?:\s|$)/gm) || []
+  const titledHeadings = section.match(/^## !!steps \S+/gm) || []
   const snapshots = [...section.matchAll(
-    /```js ! agent\.js range=1:220\n([\s\S]*?)\n```/g,
+    /```js ! agent\.js range=(\d+):(\d+)\n([\s\S]*?)\n```/g,
   )]
 
-  assert.equal(headings.length, 3)
-  assert.equal(snapshots.length, 3)
-  assert.doesNotMatch(section, /^## !!steps s01\.\d+：\d+\./m)
-  assert.ok(snapshots.every((snapshot) => snapshot[1].includes("// !focus(start)")))
-  const finalCode = snapshots.at(-1)[1]
+  assert.equal(headings.length, 6)
+  assert.equal(titledHeadings.length, 1)
+  assert.equal(snapshots.length, 6)
+  assert.doesNotMatch(content, /^## !!steps s\d\d\.\d+/m)
+  for (const snapshot of snapshots) {
+    const start = Number(snapshot[1])
+    const end = Number(snapshot[2])
+    const lines = snapshot[3].split("\n")
+    const firstFocus = lines.indexOf("// !focus(start)") + 1
+    const lastFocus = lines.lastIndexOf("// !focus(end)") + 1
+
+    assert.ok(firstFocus > 0)
+    assert.ok(lastFocus >= firstFocus)
+    assert.ok(start <= firstFocus)
+    assert.ok(end >= lastFocus)
+    assert.ok(end <= lines.length)
+  }
+  assert.ok(new Set(snapshots.map((snapshot) => `${snapshot[1]}:${snapshot[2]}`)).size > 1)
+  const finalCode = snapshots.at(-1)[3]
     .replace(/^\/\/ !focus\((?:start|end)\)\n?/gm, "")
     .trimEnd()
   assert.equal(finalCode, target.trimEnd())
 
-  for (const chapter of Array.from({ length: 17 }, (_, index) => index + 2)) {
-    const prefix = `s${String(chapter).padStart(2, "0")}`
-    const chapterSteps = content.match(new RegExp(`^## !!steps ${prefix}(?:\\.|：)`, "gm")) || []
-    assert.equal(chapterSteps.length, 1, `${prefix} should remain a single step`)
+  assert.doesNotMatch(content, /range=1:220/)
+
+  const s05Section = content.match(
+    /## !!steps s05：[\s\S]*?(?=\n## !!steps s06：)/,
+  )?.[0] || ""
+  assert.match(s05Section, /### 本章目标/)
+  assert.match(s05Section, /### 新增能力/)
+  assert.match(s05Section, /### 流程图/)
+  assert.match(s05Section, /### 测试 Prompt/)
+  assert.match(s05Section, /```text[\s\S]*todo_write/)
+
+  const s00Section = content.match(
+    /## !!steps s00：[\s\S]*?(?=\n## !!steps s01：)/,
+  )?.[0] || ""
+  const s00Headings = s00Section.match(/^## !!steps(?:\s|$)/gm) || []
+  assert.equal(s00Headings.length, 4)
+
+  const expectedSteps = {
+    s02: 5, s03: 5, s04: 7, s05: 5, s06: 5, s07: 5, s08: 9, s09: 13,
+    s10: 7, s11: 8, s12: 6, s13: 8, s14: 10, s15: 9, s16: 9, s17: 8,
   }
+  const prefixes = Object.keys(expectedSteps)
+  for (const [index, prefix] of prefixes.entries()) {
+    const nextPrefix = prefixes[index + 1] || "s18"
+    const chapterSection = content.match(
+      new RegExp(`## !!steps ${prefix}：[\\s\\S]*?(?=\\n## !!steps ${nextPrefix}：)`),
+    )?.[0] || ""
+    const chapterSteps = chapterSection.match(/^## !!steps(?:\s|$)/gm) || []
+    const chapterTitles = chapterSection.match(/^## !!steps \S+/gm) || []
+    assert.equal(chapterSteps.length, expectedSteps[prefix], `${prefix} should have ${expectedSteps[prefix]} steps`)
+    assert.equal(chapterTitles.length, 1, `${prefix} should only emit a heading on its first step`)
+  }
+  // A focus marker is a comment, so it must never sit inside a multi-line template literal.
+  for (const block of content.matchAll(/```js ! agent\.js range=[\d:]+\n([\s\S]*?)\n```/g)) {
+    let insideTemplate = false
+    for (const line of block[1].split("\n")) {
+      if (/^\/\/ !focus\((?:start|end)\)$/.test(line)) assert.equal(insideTemplate, false)
+      const backticks = (line.replace(/\\`/g, "").match(/`/g) || []).length
+      if (backticks % 2) insideTemplate = !insideTemplate
+    }
+  }
+  const s18Steps = content.match(/^## !!steps s18(?:\.|：)/gm) || []
+  assert.equal(s18Steps.length, 1, "s18 should remain a single step")
   assert.doesNotMatch(content, /^## !!steps s19/m)
-  assert.match(content, /### 2\. Context Engineering：让模型只看当前真正需要的信息/)
-  assert.match(content, /右侧继续展示 s17 的完整 Agent/)
+  assert.match(content, /## !!steps s18：扩展阅读路线图/)
+  assert.match(content, /#### 2\. Attention 在做什么/)
+  assert.match(content, /右侧继续展示 `s17` 的完整 Agent/)
+  assert.doesNotMatch(content, /s18-kv-cache\.md/)
+
+  const mermaidBlocks = content.match(/^```mermaid$/gm) || []
+  assert.equal(mermaidBlocks.length, 26, "all 26 main-chapter diagrams should be emitted as mermaid blocks")
+  assert.doesNotMatch(content, /learn\.shareai\.run/)
+  assert.doesNotMatch(content, /\+&lt;---/)
+  assert.doesNotMatch(content, /`[^`\n]*&#123;/)
+  assert.match(section, /### 扩展阅读：商业级 Agent 怎么做主循环/)
+
+  const s01LastStep = section.split(/^## !!steps(?:\s|$)/m).at(-1) || ""
+  assert.match(s01LastStep, /### 测试 Prompt/)
+
+  const runtimeSteps = await getTutorialRuntimeSteps()
+  const totalExpectedSteps = 4 + 6 + Object.values(expectedSteps).reduce((sum, count) => sum + count, 0) + 1
+  assert.equal(runtimeSteps.length, totalExpectedSteps)
 })

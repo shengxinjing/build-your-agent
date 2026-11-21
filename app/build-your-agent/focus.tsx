@@ -8,10 +8,10 @@ export const focus: AnnotationHandler = {
   Line: (props) => (
     <InnerLine
       merge={props}
-      className="opacity-50 data-[focus]:opacity-100 px-2"
+      className="px-3 opacity-55 transition-opacity duration-200 data-[focus]:opacity-100"
     />
   ),
   AnnotatedLine: ({ annotation, ...props }) => (
-    <InnerLine merge={props} data-focus={true} className="bg-zinc-700/30" />
+    <InnerLine merge={props} data-focus={true} className="scrolly-focus-line" />
   ),
 }

@@ -18,16 +18,9 @@ import {
   runChatCli,
   isMainModule,
   parseFrontmatter,
+  prepareHistoryForSummary,
 } from "./helper.js";
 
-// s09：记忆系统 —— 压缩会丢细节，要有一层不丢的，跨压缩、跨会话。
-// s09: a memory layer — compaction loses details, so keep a layer that doesn't, across sessions.
-// 存储用文件：.memory/ 下每条记忆一个带 frontmatter 的 .md，MEMORY.md 是索引（注入 SYSTEM）。
-// 加载两条路径：① 索引常驻 SYSTEM；② 每轮用 LLM 选出相关记忆，临时注入当前 user turn（不写回历史）。
-// 写入：每轮对话结束后用 LLM 从对话里提取新记忆；文件多了再用 LLM 去重整理。
-// 注：上游 Python 为聚焦记忆把工具裁到 6 个；本课累积版保留 s08 的全部 9 个工具，只叠加记忆层。
-
-// ── 技能加载（沿用 s07/s08）。/ Skill loading (from s07/s08). ──
 const SKILLS_DIR = path.join(process.cwd(), "skills");
 
 export function scanSkills(dir = SKILLS_DIR) {
@@ -57,23 +50,14 @@ function loadSkill({ name }) {
   return skill ? skill.content : `Skill not found: ${name}`;
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s09 新增：记忆系统（存储 + 加载 + 提取 + 整理）
-//  NEW in s09: memory system (store + load + extract + consolidate)
-// ═══════════════════════════════════════════════════════════
-
 const MEMORY_TYPES = ["user", "feedback", "project", "reference"];
 
-// 记忆目录可被测试重定向到临时目录（默认 .memory/，已被 gitignore）。
-// The memory dir can be redirected to a tmp dir in tests (defaults to .memory/).
 let memoryDir = path.join(process.cwd(), ".memory");
 export function setMemoryDir(dir) {
   memoryDir = dir;
 }
 const indexPath = () => path.join(memoryDir, "MEMORY.md");
 
-// 写入一条记忆（Markdown + frontmatter），随后重建索引。
-// Write one memory (Markdown + frontmatter), then rebuild the index.
 export function writeMemoryFile(name, type, description, body) {
   mkdirSync(memoryDir, { recursive: true });
   const slug = name.toLowerCase().replace(/[\s/]+/g, "-");
@@ -109,13 +93,10 @@ function rebuildIndex() {
   writeFileSync(indexPath(), lines.length ? `${lines.join("\n")}\n` : "");
 }
 
-// 路径一：索引常驻 SYSTEM。
 export function readMemoryIndex() {
   return existsSync(indexPath()) ? readFileSync(indexPath(), "utf8").trim() : "";
 }
 
-// 路径二：用 LLM 从目录里选出与当前对话相关的记忆；失败则降级到关键词匹配。
-// Use an LLM side-query to pick memories relevant to the current talk; fall back to keyword match.
 export async function selectRelevantMemories(messages, maxItems = 5) {
   const files = listMemoryFiles();
   if (!files.length) return [];
@@ -152,7 +133,6 @@ ${catalog}`,
         .map((i) => files[i].filename);
     }
   } catch {
-    // 降级到关键词匹配
   }
   const keywords = recent.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   return files
@@ -161,7 +141,6 @@ ${catalog}`,
     .map((f) => f.filename);
 }
 
-// 把选中的记忆全文包成一段，供注入当前 user turn。
 export async function loadMemories(messages) {
   const selected = await selectRelevantMemories(messages);
   if (!selected.length) return "";
@@ -171,8 +150,6 @@ export async function loadMemories(messages) {
   return parts.join("\n\n");
 }
 
-// 写入：每轮结束后用 LLM 从对话里提取新记忆（已有的跳过）。返回新增条数。
-// Extract new memories from the dialogue after each turn (skip ones already covered).
 export async function extractMemories(messages) {
   const dialogue = messages
     .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
@@ -226,8 +203,6 @@ ${dialogue}`,
   }
 }
 
-// 整理：文件数到阈值就用 LLM 去重/合并矛盾/淘汰过时（教学版用文件数阈值，CC 用更复杂的门控）。
-// Consolidate: when file count hits the threshold, let the LLM dedup/merge/prune.
 const CONSOLIDATE_THRESHOLD = 10;
 export async function consolidateMemories() {
   const files = listMemoryFiles();
@@ -267,12 +242,9 @@ ${catalog}`,
     }
     console.log(`[Memory: consolidated ${files.length} → ${items.length} memories]`);
   } catch {
-    // 整理失败就保持原样
   }
 }
 
-// 把相关记忆临时拼到最近一条字符串 user 消息前面（只用于本次请求，不写回历史 → 不破坏 cache）。
-// Prepend relevant memories to the latest string user message (request-only, never persisted).
 function buildRequest(messages, memoriesContent) {
   if (!memoriesContent) return messages;
   let idx = -1;
@@ -287,10 +259,6 @@ function buildRequest(messages, memoriesContent) {
   copy[idx] = { ...messages[idx], content: `${memoriesContent}\n\n${messages[idx].content}` };
   return copy;
 }
-
-// ═══════════════════════════════════════════════════════════
-//  压缩流程（沿用 s08）/ Compaction flow (from s08)
-// ═══════════════════════════════════════════════════════════
 
 const TRANSCRIPT_DIR = path.join(process.cwd(), ".transcripts");
 const TOOL_RESULTS_DIR = path.join(process.cwd(), ".task_outputs", "tool-results");
@@ -362,7 +330,7 @@ function writeTranscript(messages) {
 }
 
 async function summarizeHistory(messages) {
-  const conversation = JSON.stringify(messages).slice(0, 80000);
+  const conversation = prepareHistoryForSummary(messages);
   const prompt = `Summarize this coding-agent conversation so work can continue.
 Preserve: 1) current goal, 2) key findings/decisions, 3) files read/changed, 4) remaining work, 5) user constraints.
 Be compact but concrete.
@@ -389,8 +357,6 @@ export async function reactiveCompact(messages) {
 const isPromptTooLong = (error) =>
   /prompt.*too.*long|too many tokens|context.*length/i.test(String(error.message));
 
-// s09：SYSTEM 含记忆索引，每轮用户请求构建一次（提取/整理只在轮末发生，轮内不变）。
-// SYSTEM carries the memory index; built once per user turn (extraction happens after the turn).
 function buildSystem() {
   const index = readMemoryIndex();
   return `You are a coding agent at ${process.cwd()}. Use tools to solve tasks.
@@ -407,7 +373,6 @@ When context gets large, call compact to summarize earlier work and free space.$
 }
 const SUB_SYSTEM = `You are a coding subagent at ${process.cwd()}. Complete the task, then return a concise summary. Do not delegate further.`;
 
-// ── 工具：沿用 s08 的 9 个（bash/read/write/edit/glob/todo_write/task/load_skill/compact）。──
 const tools = [
   tool("bash", "Run a shell command.", {
     type: "object",
@@ -471,7 +436,6 @@ const tools = [
   }),
 ];
 
-// ── 计划状态（沿用 s05）。/ Plan state (from s05). ──
 let currentTodos = [];
 export function getTodos() {
   return currentTodos;
@@ -496,7 +460,6 @@ const handlers = {
   load_skill: loadSkill,
 };
 
-// ── 子代理（沿用 s06–s08）。──
 const SUB_EXCLUDE = ["task", "todo_write", "load_skill", "compact"];
 const subTools = tools.filter((t) => !SUB_EXCLUDE.includes(t.function.name));
 const subHandlers = Object.fromEntries(
@@ -526,7 +489,6 @@ async function spawnSubagent(description, confirm) {
 
 export { spawnSubagent };
 
-// ── hook 系统（沿用 s04–s08）。──
 const hooks = { UserPromptSubmit: [], PreToolUse: [], PostToolUse: [], Stop: [] };
 
 function registerHook(event, callback) {
@@ -557,13 +519,11 @@ async function permissionHook(name, args, confirm) {
 
 registerHook("PreToolUse", permissionHook);
 
-// ── agent loop：s09 在 s08 基础上 = 轮首注入相关记忆 + 轮末提取/整理记忆。──
-// s09 builds on s08: inject relevant memories at the start, extract/consolidate at the end.
 export async function agentLoop(messages, confirm) {
   let roundsSinceTodo = 0;
   let reactiveRetries = 0;
-  const system = buildSystem(); // s09：含记忆索引，每个用户请求构建一次
-  const memoriesContent = await loadMemories(messages); // s09：选出相关记忆，临时注入
+  const system = buildSystem();
+  const memoriesContent = await loadMemories(messages);
   let preCompress = messages.map((m) => ({ role: m.role, content: m.content }));
 
   while (true) {
@@ -572,7 +532,7 @@ export async function agentLoop(messages, confirm) {
       roundsSinceTodo = 0;
     }
 
-    preCompress = messages.map((m) => ({ role: m.role, content: m.content })); // s09：压缩前快照（提取用）
+    preCompress = messages.map((m) => ({ role: m.role, content: m.content }));
 
     apply(messages, toolResultBudget(messages));
     apply(messages, snipCompact(messages));
@@ -584,7 +544,6 @@ export async function agentLoop(messages, confirm) {
 
     let message;
     try {
-      // s09：把相关记忆临时拼进请求（不写回 messages）。
       ({ message } = await callLlm(buildRequest(messages, memoriesContent), { system, tools }));
       reactiveRetries = 0;
     } catch (error) {
@@ -598,7 +557,6 @@ export async function agentLoop(messages, confirm) {
     }
 
     if (!message.tool_calls?.length) {
-      // s09：对话告一段落 → 从压缩前快照提取新记忆 + 必要时整理。
       await extractMemories(preCompress);
       await consolidateMemories();
       return message.content || "";

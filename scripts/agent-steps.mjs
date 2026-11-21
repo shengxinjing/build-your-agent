@@ -8,10 +8,8 @@ export function applyAgentPatch(source, patch, { maxChangedLines = 10 } = {}) {
     throw new Error(`${changedLines} changed lines; the limit is ${maxChangedLines}`)
   }
 
-  let sourceLines = source
-    .replaceAll("\r\n", "\n")
-    .split("\n")
-    .map((value) => ({ value, focus: false }))
+  const normalized = source.replaceAll("\r\n", "\n")
+  const sourceLines = normalized.split("\n").map((value) => ({ value, focus: false }))
 
   for (const hunk of hunks) {
     const before = []
@@ -31,21 +29,32 @@ export function applyAgentPatch(source, patch, { maxChangedLines = 10 } = {}) {
     }
 
     let sourceOffset = 0
+    let removedBefore = false
     const after = hunk.flatMap((line) => {
       const marker = line[0]
       if (marker === "-") {
         sourceOffset += 1
+        removedBefore = true
         return []
       }
       if (marker === " ") {
         const existingLine = sourceLines[matches[0] + sourceOffset]
         sourceOffset += 1
+        if (removedBefore) existingLine.removalAnchor = true
+        removedBefore = false
         return [existingLine]
       }
+      removedBefore = false
       return [{ value: line.slice(1), focus: true }]
     })
+    if (removedBefore && after.length) after.at(-1).removalAnchor = true
 
     sourceLines.splice(matches[0], before.length, ...after)
+  }
+
+  // A frame that only removes code highlights the line where the code used to be.
+  if (!sourceLines.some((line) => line.focus)) {
+    for (const line of sourceLines) if (line.removalAnchor) line.focus = true
   }
 
   return {
@@ -114,7 +123,13 @@ function parseHunks(patch) {
 }
 
 function findMatches(lines, target) {
-  if (!target.length) throw new Error("Agent step needs at least one context or removed line")
+  if (!target.length) {
+    if (lines.length === 1 && lines[0] === "") {
+      return [0]
+    }
+
+    throw new Error("Agent step needs at least one context or removed line")
+  }
 
   const matches = []
   for (let index = 0; index <= lines.length - target.length; index += 1) {

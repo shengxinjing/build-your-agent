@@ -1,16 +1,19 @@
 {
-  "name": "code-hike-v1-starter",
+  "name": "build-your-agent",
   "version": "0.1.1",
   "private": true,
+  "packageManager": "pnpm@11.8.0",
   "scripts": {
     "dev": "pnpm run generate:build-your-agent && next dev",
     "dev:clean": "rm -rf .next && pnpm run generate:build-your-agent && next dev",
     "generate:build-your-agent": "node scripts/generate-build-your-agent-content.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
     "prod:watch": "node scripts/prod-watch.mjs",
     "build": "pnpm run generate:build-your-agent && next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "pnpm vitest run code-agent-course/"
+    "test": "vitest run code-agent-course/ && node --test lib/*.test.ts scripts/*.test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@mdx-js/loader": "^3.1.0",
@@ -22,6 +25,7 @@
     "@xterm/xterm": "^6.0.0",
     "codehike": "^1.0.4",
     "lucide-react": "^0.511.0",
+    "mermaid": "^12.3.0",
     "monaco-editor": "^0.55.1",
     "next": "15.1.9",
     "react": "19.0.0",

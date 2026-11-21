@@ -35,14 +35,14 @@ export function IdeEditor({
 
   return (
     <div
-      className="live-demo-panel flex h-full min-h-0 flex-col overflow-hidden overscroll-contain rounded-[28px] shadow-[0_30px_80px_rgba(15,23,42,0.16)] dark:shadow-[0_30px_80px_rgba(0,0,0,0.34)]"
+      className="live-demo-panel flex h-full min-h-0 flex-col overflow-hidden overscroll-contain rounded-[22px] shadow-[0_30px_80px_rgba(15,23,42,0.16)] dark:shadow-[0_30px_80px_rgba(0,0,0,0.34)]"
     >
-      <div className="live-demo-panel__header flex items-center justify-between border-b px-5 py-4">
-        <div className="w-16" />
-        <div className="live-demo-panel__title text-[15px] font-semibold">
+      <div className="live-demo-panel__header flex items-center justify-between border-b px-4 py-2.5">
+        <div className="w-14" />
+        <div className="live-demo-panel__title text-[13px] font-semibold">
           {fileName}
         </div>
-        <div className="live-demo-panel__meta w-16 text-right text-[11px] uppercase tracking-[0.16em]">
+        <div className="live-demo-panel__meta w-14 text-right text-[10px] uppercase tracking-[0.16em]">
           {readOnly ? "Read-only" : "Editable"}
         </div>
       </div>
@@ -52,7 +52,7 @@ export function IdeEditor({
           defaultLanguage={language}
           language={language}
           loading={
-            <div className="live-demo-panel__loading flex h-full items-center justify-center text-sm">
+            <div className="live-demo-panel__loading flex h-full items-center justify-center text-xs">
               Loading editor...
             </div>
           }
@@ -70,15 +70,15 @@ export function IdeEditor({
             fontFamily:
               'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
             fontLigatures: true,
-            fontSize: 14,
+            fontSize: 12,
             glyphMargin: false,
-            lineHeight: 26,
+            lineHeight: 20,
             lineNumbers: "off",
             minimap: { enabled: false },
             overviewRulerBorder: false,
             padding: {
-              top: 18,
-              bottom: 18,
+              top: 12,
+              bottom: 12,
             },
             renderLineHighlight: "none",
             roundedSelection: true,

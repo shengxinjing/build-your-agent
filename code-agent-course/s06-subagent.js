@@ -10,15 +10,9 @@ import {
   isMainModule,
 } from "./helper.js";
 
-// s06：task 工具 —— 把大任务交给一个“子代理”。
-// s06: a task tool that hands a big job to a *subagent*.
-// 子代理用全新的 messages（上下文隔离）跑自己的循环，只把最终摘要回传，中间过程全部丢弃。
-// The subagent runs its own loop with fresh messages (isolation) and returns only its summary.
-
 const SYSTEM = `You are a coding agent at ${process.cwd()}. Use tools to solve tasks. Before a multi-step task, use todo_write to plan and update status as you go. For a complex sub-problem, use the task tool to spawn a subagent.`;
 const SUB_SYSTEM = `You are a coding subagent at ${process.cwd()}. Complete the task, then return a concise summary. Do not delegate further.`;
 
-// ── 工具：s05 的 6 个 + 本步新增的 task。/ Tools: s05's 6 + the new task. ──
 const tools = [
   tool("bash", "Run a shell command.", {
     type: "object",
@@ -73,7 +67,6 @@ const tools = [
   }),
 ];
 
-// ── 计划状态（沿用 s05）。/ Plan state (from s05). ──
 let currentTodos = [];
 export function getTodos() {
   return currentTodos;
@@ -94,13 +87,9 @@ const handlers = {
   edit_file: ({ path, old_text, new_text }) => editFile(path, old_text, new_text),
   glob: ({ pattern }) => glob(pattern),
   todo_write: runTodoWrite,
-  // s06 新增：把子任务交给一个子代理。/ NEW in s06: hand a subtask to a subagent.
   task: ({ description }, confirm) => spawnSubagent(description, confirm),
 };
 
-// ── s06 新增：子代理 ──
-// 子代理工具 = 父工具去掉 task（防递归）和 todo_write（子任务不需要规划）。
-// Subagent tools = parent tools minus task (no recursion) and todo_write.
 const SUB_EXCLUDE = ["task", "todo_write"];
 const subTools = tools.filter((t) => !SUB_EXCLUDE.includes(t.function.name));
 const subHandlers = Object.fromEntries(
@@ -108,8 +97,6 @@ const subHandlers = Object.fromEntries(
 );
 const MAX_SUB_TURNS = 30;
 
-// 用全新 messages 跑一个子循环，只返回最终文本（中间过程随子 messages 一起丢弃）。
-// Run a fresh sub-loop and return only the final text (the rest is discarded with the sub messages).
 async function spawnSubagent(description, confirm) {
   const messages = [{ role: "user", content: description }];
   for (let turn = 0; turn < MAX_SUB_TURNS; turn += 1) {
@@ -120,8 +107,6 @@ async function spawnSubagent(description, confirm) {
     for (const call of message.tool_calls) {
       const name = call.function.name;
       const args = JSON.parse(call.function.arguments || "{}");
-      // 子代理的工具调用也走权限门：上下文隔离不等于权限隔离。
-      // Subagent tool calls still pass the gate: context isolation is not permission isolation.
       const blocked = await triggerHooks("PreToolUse", name, args, confirm);
       const handler = subHandlers[name];
       const output =
@@ -132,7 +117,6 @@ async function spawnSubagent(description, confirm) {
   return "Subagent stopped after 30 turns without a final answer.";
 }
 
-// ── hook 系统（沿用 s04/s05）。/ Hook system (from s04/s05). ──
 const hooks = { UserPromptSubmit: [], PreToolUse: [], PostToolUse: [], Stop: [] };
 
 function registerHook(event, callback) {
@@ -163,8 +147,6 @@ async function permissionHook(name, args, confirm) {
 
 registerHook("PreToolUse", permissionHook);
 
-// ── agent loop：和 s05 一样，只在工具调用时多传一个 confirm（task 派生的子代理要用）。──
-// Same loop as s05; tool calls now also receive `confirm` (the task's subagent needs it).
 export async function agentLoop(messages, confirm) {
   let roundsSinceTodo = 0;
   while (true) {

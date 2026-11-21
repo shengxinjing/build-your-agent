@@ -70,50 +70,54 @@ export function sliceCodeByRange(
     return contents
   }
 
-  const lines = contents.split("\n")
-
-  return lines
+  const lines = contents
+    .split("\n")
     .slice(parsedRange.start - 1, parsedRange.end)
-    .join("\n")
+
+  return collapseUnfocusedGaps(lines).join("\n")
 }
 
-export function mergeDisplayFiles(
-  primary: TutorialDisplayFile,
-  shared: TutorialDisplayFile[],
+function collapseUnfocusedGaps(
+  lines: string[],
+  contextLines = 6,
 ) {
-  const merged: TutorialDisplayFile[] = [primary]
-  const seen = new Set([primary.fileName])
+  const maxGap = contextLines * 2 + 1
+  const result: string[] = []
+  let index = 0
 
-  for (const sharedFile of shared) {
-    if (seen.has(sharedFile.fileName)) {
-      continue
+  while (index < lines.length) {
+    const line = lines[index]
+    result.push(line)
+
+    if (line === "// !focus(end)") {
+      let nextFocusStart = index + 1
+      while (
+        nextFocusStart < lines.length &&
+        lines[nextFocusStart] !== "// !focus(start)"
+      ) {
+        nextFocusStart += 1
+      }
+
+      if (nextFocusStart < lines.length) {
+        const gap = lines.slice(index + 1, nextFocusStart)
+        if (gap.length > maxGap) {
+          result.push(
+            ...gap.slice(0, contextLines),
+            "// ...",
+            ...gap.slice(-contextLines),
+          )
+        } else {
+          result.push(...gap)
+        }
+        index = nextFocusStart
+        continue
+      }
     }
 
-    merged.push(sharedFile)
-    seen.add(sharedFile.fileName)
+    index += 1
   }
 
-  return merged
-}
-
-export function getNextActiveFileName(
-  previousFileName: string | null,
-  files: Pick<TutorialDisplayFile, "fileName">[],
-) {
-  if (files.length === 0) {
-    return null
-  }
-
-  if (
-    previousFileName &&
-    files.some(
-      (file) => file.fileName === previousFileName,
-    )
-  ) {
-    return previousFileName
-  }
-
-  return files[0].fileName
+  return result
 }
 
 export function getExtension(fileName: string) {
@@ -187,4 +191,32 @@ export function normalizeLangFromFileName(
 
 function sanitizeFileName(fileName: string) {
   return fileName.replace(/[^a-zA-Z0-9._/-]/g, "-")
+}
+
+type HighlightedToken = string | readonly [string, ...unknown[]]
+
+export function extractHighlightedCodeText(
+  highlightedCode:
+    | {
+      code?: string
+      tokens?: readonly HighlightedToken[]
+    }
+    | null
+    | undefined,
+) {
+  if (!highlightedCode) {
+    return ""
+  }
+
+  if (highlightedCode.code) {
+    return highlightedCode.code
+  }
+
+  if (!highlightedCode.tokens) {
+    return ""
+  }
+
+  return highlightedCode.tokens
+    .map((token) => (typeof token === "string" ? token : token[0]))
+    .join("")
 }

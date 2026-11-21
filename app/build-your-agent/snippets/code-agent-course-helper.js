@@ -243,6 +243,18 @@ export function parseFrontmatter(text) {
   return { meta, body: text.slice(end + 4).trim() };
 }
 
+// 为摘要模型保留稳定头部和最新尾部，避免超长历史只剩最旧内容。
+// Keep a stable prefix and the latest tail so summaries do not lose current work.
+export function prepareHistoryForSummary(messages, maxChars = 80000, headChars = 10000) {
+  const serialized = JSON.stringify(messages);
+  if (serialized.length <= maxChars) return serialized;
+
+  const marker = "\n...[middle history omitted before summary]...\n";
+  const headSize = Math.min(headChars, Math.floor((maxChars - marker.length) / 2));
+  const tailSize = maxChars - marker.length - headSize;
+  return `${serialized.slice(0, headSize)}${marker}${serialized.slice(-tailSize)}`;
+}
+
 // 匹配 cron 单个字段：支持 * / */N / N / N-M / N,M,...。
 // Match one cron field: supports * / */N / N / N-M / N,M,...
 function cronFieldMatches(field, value) {

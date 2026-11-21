@@ -32,9 +32,6 @@ export function PostList({
                 {post.summary}
               </p>
             </div>
-            {/* <span className="post-list__arrow">
-              Read
-            </span> */}
           </a>
         </article>
       ))}

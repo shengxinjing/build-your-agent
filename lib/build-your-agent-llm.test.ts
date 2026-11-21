@@ -42,8 +42,8 @@ test("provider config map keeps model and baseUrl by provider key", () => {
     "https://api.moonshot.cn/v1",
   )
   assert.equal(
-    LLM_PROVIDER_CONFIGS.anthropic.model,
-    "claude-sonnet-4-5",
+    LLM_PROVIDER_CONFIGS.deepseek.model,
+    "deepseek-chat",
   )
 })
 

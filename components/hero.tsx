@@ -106,6 +106,8 @@ export function HomeHero({
                   className="wechat-popover__image"
                   width={160}
                   height={160}
+                  loading="lazy"
+                  fetchPriority="low"
                 />
               </div>
             </div>

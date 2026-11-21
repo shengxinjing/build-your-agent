@@ -9,33 +9,81 @@ export const PreWithFocus: AnnotationHandler["PreWithRef"] = (props) => {
   return <InnerPre merge={props} />
 }
 
+function getOffsetTopWithin(
+  element: HTMLElement,
+  ancestor: HTMLElement,
+) {
+  let top = 0
+  let current: HTMLElement | null = element
+
+  while (current && current !== ancestor) {
+    top += current.offsetTop
+    current = current.offsetParent as HTMLElement | null
+  }
+
+  return top
+}
+
 function useScrollToFocus(ref: React.RefObject<HTMLPreElement>) {
   const firstRender = useRef(true)
+
   useLayoutEffect(() => {
-    if (ref.current) {
-      // find all descendants whith data-focus="true"
-      const focusedElements = ref.current.querySelectorAll(
-        "[data-focus=true]",
-      ) as NodeListOf<HTMLElement>
-
-      // find top and bottom of the focused elements
-      const containerRect = ref.current.getBoundingClientRect()
-      let top = Infinity
-      let bottom = -Infinity
-      focusedElements.forEach((el) => {
-        const rect = el.getBoundingClientRect()
-        top = Math.min(top, rect.top - containerRect.top)
-        bottom = Math.max(bottom, rect.bottom - containerRect.top)
-      })
-
-      // scroll to the focused elements if any part of them is not visible
-      if (bottom > containerRect.height || top < 0) {
-        ref.current.scrollTo({
-          top: ref.current.scrollTop + top - 10,
-          behavior: firstRender.current ? "instant" : "smooth",
-        })
-      }
-      firstRender.current = false
+    const pre = ref.current
+    if (!pre) {
+      return
     }
+
+    const scrollContainer =
+      (pre.closest(".scrolly-stage__scroll") as HTMLElement | null) ?? pre
+    const viewportHeight = scrollContainer.clientHeight
+    const focusedElements = pre.querySelectorAll(
+      "[data-focus=true]",
+    ) as NodeListOf<HTMLElement>
+
+    if (viewportHeight <= 0 || focusedElements.length === 0) {
+      firstRender.current = false
+      return
+    }
+
+    let focusTop = Infinity
+    let focusBottom = -Infinity
+
+    focusedElements.forEach((element) => {
+      const top = getOffsetTopWithin(element, scrollContainer)
+      const bottom = top + element.offsetHeight
+      focusTop = Math.min(focusTop, top)
+      focusBottom = Math.max(focusBottom, bottom)
+    })
+
+    const maxScrollTop = Math.max(
+      0,
+      scrollContainer.scrollHeight - viewportHeight,
+    )
+    let targetTop = 0
+
+    if (focusBottom <= viewportHeight - 20) {
+      targetTop = 0
+    } else if (focusBottom - focusTop <= viewportHeight - 64) {
+      const padding = Math.max(
+        32,
+        Math.floor((viewportHeight - (focusBottom - focusTop)) * 0.35),
+      )
+      targetTop = Math.max(0, Math.min(focusTop - padding, maxScrollTop))
+    } else {
+      targetTop = Math.max(0, Math.min(focusTop - 36, maxScrollTop))
+    }
+
+    if (
+      Math.abs(scrollContainer.scrollTop - targetTop) > 4 ||
+      scrollContainer.scrollLeft > 0
+    ) {
+      scrollContainer.scrollTo({
+        top: targetTop,
+        left: 0,
+        behavior: firstRender.current ? "instant" : "smooth",
+      })
+    }
+
+    firstRender.current = false
   })
 }

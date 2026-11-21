@@ -18,14 +18,9 @@ import {
   runChatCli,
   isMainModule,
   parseFrontmatter,
+  prepareHistoryForSummary,
 } from "./helper.js";
 
-// s11：错误恢复 —— 错误不是终点，是重试的起点。
-// s11: error recovery — an error isn't the end, it's where the retry begins.
-// 在 s10 基础上，把主循环的 LLM 调用包进三条恢复路径：① 输出截断 → 升 token 再续写；
-// ② 上下文超限 → 应急压缩重试；③ 瞬态故障（429/529）→ 指数退避，连续过载切备用模型。
-
-// ── 技能加载（沿用 s07/s08）。/ Skill loading (from s07/s08). ──
 const SKILLS_DIR = path.join(process.cwd(), "skills");
 
 export function scanSkills(dir = SKILLS_DIR) {
@@ -55,23 +50,14 @@ function loadSkill({ name }) {
   return skill ? skill.content : `Skill not found: ${name}`;
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s09 新增：记忆系统（存储 + 加载 + 提取 + 整理）
-//  NEW in s09: memory system (store + load + extract + consolidate)
-// ═══════════════════════════════════════════════════════════
-
 const MEMORY_TYPES = ["user", "feedback", "project", "reference"];
 
-// 记忆目录可被测试重定向到临时目录（默认 .memory/，已被 gitignore）。
-// The memory dir can be redirected to a tmp dir in tests (defaults to .memory/).
 let memoryDir = path.join(process.cwd(), ".memory");
 export function setMemoryDir(dir) {
   memoryDir = dir;
 }
 const indexPath = () => path.join(memoryDir, "MEMORY.md");
 
-// 写入一条记忆（Markdown + frontmatter），随后重建索引。
-// Write one memory (Markdown + frontmatter), then rebuild the index.
 export function writeMemoryFile(name, type, description, body) {
   mkdirSync(memoryDir, { recursive: true });
   const slug = name.toLowerCase().replace(/[\s/]+/g, "-");
@@ -107,13 +93,10 @@ function rebuildIndex() {
   writeFileSync(indexPath(), lines.length ? `${lines.join("\n")}\n` : "");
 }
 
-// 路径一：索引常驻 SYSTEM。
 export function readMemoryIndex() {
   return existsSync(indexPath()) ? readFileSync(indexPath(), "utf8").trim() : "";
 }
 
-// 路径二：用 LLM 从目录里选出与当前对话相关的记忆；失败则降级到关键词匹配。
-// Use an LLM side-query to pick memories relevant to the current talk; fall back to keyword match.
 export async function selectRelevantMemories(messages, maxItems = 5) {
   const files = listMemoryFiles();
   if (!files.length) return [];
@@ -150,7 +133,6 @@ ${catalog}`,
         .map((i) => files[i].filename);
     }
   } catch {
-    // 降级到关键词匹配
   }
   const keywords = recent.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   return files
@@ -159,7 +141,6 @@ ${catalog}`,
     .map((f) => f.filename);
 }
 
-// 把选中的记忆全文包成一段，供注入当前 user turn。
 export async function loadMemories(messages) {
   const selected = await selectRelevantMemories(messages);
   if (!selected.length) return "";
@@ -169,8 +150,6 @@ export async function loadMemories(messages) {
   return parts.join("\n\n");
 }
 
-// 写入：每轮结束后用 LLM 从对话里提取新记忆（已有的跳过）。返回新增条数。
-// Extract new memories from the dialogue after each turn (skip ones already covered).
 export async function extractMemories(messages) {
   const dialogue = messages
     .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
@@ -224,8 +203,6 @@ ${dialogue}`,
   }
 }
 
-// 整理：文件数到阈值就用 LLM 去重/合并矛盾/淘汰过时（教学版用文件数阈值，CC 用更复杂的门控）。
-// Consolidate: when file count hits the threshold, let the LLM dedup/merge/prune.
 const CONSOLIDATE_THRESHOLD = 10;
 export async function consolidateMemories() {
   const files = listMemoryFiles();
@@ -265,12 +242,9 @@ ${catalog}`,
     }
     console.log(`[Memory: consolidated ${files.length} → ${items.length} memories]`);
   } catch {
-    // 整理失败就保持原样
   }
 }
 
-// 把相关记忆临时拼到最近一条字符串 user 消息前面（只用于本次请求，不写回历史 → 不破坏 cache）。
-// Prepend relevant memories to the latest string user message (request-only, never persisted).
 function buildRequest(messages, memoriesContent) {
   if (!memoriesContent) return messages;
   let idx = -1;
@@ -285,10 +259,6 @@ function buildRequest(messages, memoriesContent) {
   copy[idx] = { ...messages[idx], content: `${memoriesContent}\n\n${messages[idx].content}` };
   return copy;
 }
-
-// ═══════════════════════════════════════════════════════════
-//  压缩管线（沿用 s08）/ Compaction pipeline (from s08)
-// ═══════════════════════════════════════════════════════════
 
 const TRANSCRIPT_DIR = path.join(process.cwd(), ".transcripts");
 const TOOL_RESULTS_DIR = path.join(process.cwd(), ".task_outputs", "tool-results");
@@ -359,7 +329,7 @@ function writeTranscript(messages) {
 }
 
 async function summarizeHistory(messages) {
-  const conversation = JSON.stringify(messages).slice(0, 80000);
+  const conversation = prepareHistoryForSummary(messages);
   const prompt = `Summarize this coding-agent conversation so work can continue.
 Preserve: 1) current goal, 2) key findings/decisions, 3) files read/changed, 4) remaining work, 5) user constraints.
 Be compact but concrete.
@@ -386,40 +356,31 @@ export async function reactiveCompact(messages) {
 const isPromptTooLong = (error) =>
   /prompt.*too.*long|too many tokens|context.*length/i.test(String(error.message));
 
-// ═══════════════════════════════════════════════════════════
-//  s11 新增：错误恢复（截断升级 / 上下文超限压缩 / 瞬态退避重试）
-//  NEW in s11: error recovery (truncation escalate / prompt-too-long compact / transient backoff)
-// ═══════════════════════════════════════════════════════════
-
 const DEFAULT_MAX_TOKENS = 8000;
 const ESCALATED_MAX_TOKENS = 64000;
-const MAX_RECOVERY_RETRIES = 3; // 续写次数上限
-const MAX_RETRIES = 10; // 瞬态错误退避次数上限
+const MAX_RECOVERY_RETRIES = 3;
+const MAX_RETRIES = 10;
 const BASE_DELAY_MS = 500;
-const MAX_CONSECUTIVE_529 = 3; // 连续过载达到此数 → 切换备用模型
+const MAX_CONSECUTIVE_529 = 3;
 const CONTINUATION_PROMPT =
   "Output token limit hit. Resume directly — no apology, no recap. Pick up mid-thought.";
 
-// 跨循环跟踪恢复状态。/ Tracks recovery progress across the loop.
 export class RecoveryState {
   constructor() {
-    this.escalated = false; // 是否已把 max_tokens 升到 64K
-    this.recoveryCount = 0; // 已续写次数
-    this.consecutive529 = 0; // 连续 529 次数
-    this.attemptedReactiveCompact = false; // 是否已应急压缩过
-    this.currentModel = null; // null = provider 默认模型；切换后 = 备用模型
+    this.escalated = false;
+    this.recoveryCount = 0;
+    this.consecutive529 = 0;
+    this.attemptedReactiveCompact = false;
+    this.currentModel = null;
   }
 }
 
-// 指数退避 + 抖动；服务器给了 Retry-After 就优先用它。
-// Exponential backoff with jitter; a Retry-After value wins if present.
 export function retryDelay(attempt, retryAfter) {
   if (retryAfter) return retryAfter;
   const base = Math.min(BASE_DELAY_MS * 2 ** attempt, 32000);
   return base + Math.random() * base * 0.25;
 }
 
-// 睡眠函数（测试可替换为立即返回，避免真实等待）。/ Sleep (tests swap in an instant no-op).
 let sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export function setSleepFn(fn) {
   sleep = fn;
@@ -428,8 +389,6 @@ export function setSleepFn(fn) {
 const isRateLimit = (msg) => /\b429\b|rate.?limit/i.test(msg);
 const isOverloaded = (msg) => /\b529\b|overloaded/i.test(msg);
 
-// 路径③：瞬态错误（429/529）→ 退避重试；连续 529 达上限且配了备用模型就切换。其它错误原样抛给外层。
-// Path 3: transient errors → backoff retry; switch to the fallback model after enough 529s. Others re-thrown.
 export async function withRetry(fn, state) {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
     try {
@@ -453,19 +412,12 @@ export async function withRetry(fn, state) {
         await sleep(retryDelay(attempt));
         continue;
       }
-      throw error; // 非瞬态 → 交给外层 try/catch
+      throw error;
     }
   }
   throw new Error(`Max retries (${MAX_RETRIES}) exceeded`);
 }
 
-// ═══════════════════════════════════════════════════════════
-//  s10 新增：system prompt 运行时分段组装 + 缓存（替换 s09 的 buildSystem）
-//  NEW in s10: assemble the system prompt from sections at runtime, with caching
-// ═══════════════════════════════════════════════════════════
-
-// 每个 section 独立维护：(context) => string | null（返回 null 表示本轮不加载）。
-// Each section is independent: (context) => string | null (null = skip this turn).
 const PROMPT_SECTIONS = {
   identity: () =>
     `You are a coding agent at ${process.cwd()}. Use tools to solve tasks. Before a multi-step task, use todo_write to plan and update status as you go. For a complex sub-problem, use the task tool to spawn a subagent.`,
@@ -480,14 +432,10 @@ const PROMPT_SECTIONS = {
 };
 const SECTION_ORDER = ["identity", "tools", "skills", "compaction", "memory"];
 
-// 按 context 的真实状态选段拼接（不靠消息里的关键词）。
-// Select + join sections by the real state in context (not message keywords).
 export function assembleSystemPrompt(context) {
   return SECTION_ORDER.map((key) => PROMPT_SECTIONS[key](context)).filter(Boolean).join("\n\n");
 }
 
-// context 没变就复用上次结果（确定性 JSON key；buildContext 的 key 顺序固定，无需排序）。
-// Reuse the last result when context is unchanged (deterministic JSON key, not hash()).
 let lastContextKey = null;
 let lastSystemPrompt = null;
 export function getSystemPrompt(context) {
@@ -502,8 +450,6 @@ export function resetSystemPromptCache() {
   lastSystemPrompt = null;
 }
 
-// 从真实状态派生 context：注册了哪些工具、有没有技能、记忆索引内容。
-// Derive context from real state: registered tools, skills present, memory index.
 export function buildContext() {
   const skills = listSkills();
   return {
@@ -515,7 +461,6 @@ export function buildContext() {
 
 const SUB_SYSTEM = `You are a coding subagent at ${process.cwd()}. Complete the task, then return a concise summary. Do not delegate further.`;
 
-// ── 工具：沿用 s08 的 9 个（bash/read/write/edit/glob/todo_write/task/load_skill/compact）。──
 const tools = [
   tool("bash", "Run a shell command.", {
     type: "object",
@@ -579,7 +524,6 @@ const tools = [
   }),
 ];
 
-// ── 计划状态（沿用 s05）。/ Plan state (from s05). ──
 let currentTodos = [];
 export function getTodos() {
   return currentTodos;
@@ -604,7 +548,6 @@ const handlers = {
   load_skill: loadSkill,
 };
 
-// ── 子代理（沿用 s06–s08）。──
 const SUB_EXCLUDE = ["task", "todo_write", "load_skill", "compact"];
 const subTools = tools.filter((t) => !SUB_EXCLUDE.includes(t.function.name));
 const subHandlers = Object.fromEntries(
@@ -634,7 +577,6 @@ async function spawnSubagent(description, confirm) {
 
 export { spawnSubagent };
 
-// ── hook 系统（沿用 s04–s08）。──
 const hooks = { UserPromptSubmit: [], PreToolUse: [], PostToolUse: [], Stop: [] };
 
 function registerHook(event, callback) {
@@ -665,12 +607,10 @@ async function permissionHook(name, args, confirm) {
 
 registerHook("PreToolUse", permissionHook);
 
-// ── agent loop：s11 在 s10 基础上，把 LLM 调用包进 withRetry + 三条恢复路径。──
-// s11 builds on s10: wrap the LLM call in withRetry + three recovery paths.
 export async function agentLoop(messages, confirm) {
   let roundsSinceTodo = 0;
-  const state = new RecoveryState(); // s11：跟踪截断升级 / 压缩 / 529 / 模型切换
-  let maxTokens = DEFAULT_MAX_TOKENS; // s11：输出截断时升级到 64K
+  const state = new RecoveryState();
+  let maxTokens = DEFAULT_MAX_TOKENS;
   let context = buildContext();
   let system = getSystemPrompt(context);
   const memoriesContent = await loadMemories(messages);
@@ -682,7 +622,7 @@ export async function agentLoop(messages, confirm) {
       roundsSinceTodo = 0;
     }
 
-    preCompress = messages.map((m) => ({ role: m.role, content: m.content })); // s09：压缩前快照（提取用）
+    preCompress = messages.map((m) => ({ role: m.role, content: m.content }));
 
     apply(messages, toolResultBudget(messages));
     apply(messages, snipCompact(messages));
@@ -691,7 +631,6 @@ export async function agentLoop(messages, confirm) {
 
     let choice;
     try {
-      // s11：withRetry 处理 429/529 退避；相关记忆仍临时拼进请求（不写回 messages）。
       choice = await withRetry(
         () =>
           callLlm(buildRequest(messages, memoriesContent), {
@@ -703,7 +642,6 @@ export async function agentLoop(messages, confirm) {
         state,
       );
     } catch (error) {
-      // 路径②：上下文超限 → 应急压缩一次再重试，仍失败就退出。
       if (isPromptTooLong(error) && !state.attemptedReactiveCompact) {
         apply(messages, await reactiveCompact(messages));
         state.attemptedReactiveCompact = true;
@@ -715,8 +653,6 @@ export async function agentLoop(messages, confirm) {
 
     const message = choice.message;
 
-    // 路径①：输出被截断（finish_reason "length"）→ 先把上限升到 64K 重试同一请求；
-    // 仍截断则保存输出 + 注入续写提示，最多续写 MAX_RECOVERY_RETRIES 次。
     if (choice.finish_reason === "length") {
       if (!state.escalated) {
         maxTokens = ESCALATED_MAX_TOKENS;
@@ -733,7 +669,6 @@ export async function agentLoop(messages, confirm) {
     }
 
     if (!message.tool_calls?.length) {
-      // s09：对话告一段落 → 从压缩前快照提取新记忆 + 必要时整理。
       await extractMemories(preCompress);
       await consolidateMemories();
       return message.content || "";
@@ -766,7 +701,6 @@ export async function agentLoop(messages, confirm) {
     }
     if (compacted) continue;
 
-    // s10：工具轮结束 → 重新派生 context；变了就重组装，没变命中缓存。
     context = buildContext();
     system = getSystemPrompt(context);
   }

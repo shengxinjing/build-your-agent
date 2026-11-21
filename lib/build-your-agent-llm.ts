@@ -15,10 +15,6 @@ export const LLM_PROVIDER_CONFIGS = {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
   },
-  // anthropic: {
-  //   baseUrl: "https://api.anthropic.com/v1",
-  //   model: "claude-sonnet-4-5",
-  // },
   deepseek: {
     baseUrl: "https://api.deepseek.com/v1",
     model: "deepseek-chat",
@@ -45,7 +41,7 @@ export const DEFAULT_LLM_SETTINGS: LlmSettings = {
   apiToken: "",
 }
 
-export function isLlmProvider(
+function isLlmProvider(
   value: unknown,
 ): value is LlmProvider {
   return LLM_PROVIDERS.includes(value as LlmProvider)
