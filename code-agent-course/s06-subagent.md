@@ -1,117 +1,36 @@
-# s06：Subagent —— 把探索放进干净上下文
+# s06：Subagent - 把探索放进干净上下文，只把摘要带回来
 
-新人遇到一堆资料要查时，如果所有草稿、试错和中间结论都塞进主汇报里，领导很快看不清主线。`s06` 像是让他临时拉一个助理去单独调研，最后只把摘要带回来。
+上一章 `s05` 学会了列计划，但一旦遇到“把目录里十几个文件都查一遍”的调研任务，大量文件读取和搜索输出会瞬间塞满主 `messages`，把主线冲淡。
 
+这一章我们给 Agent 加一把 `task` 工具，专门承接这类调研。**Subagent 的核心不是“多一个人”，而是把子代理的中间输出留在它自己的 `messages[]` 里，主对话只收最终摘要。**
 
-## 本章目标
+## 问题
 
-前面几章里，主 agent 既要负责主任务，又要负责探索细节。探索一多，主对话就会变乱。
+主 Agent 既要盯着最终目标，又要亲自翻文件、跑搜索、做试错。所有探索细节都堆在同一份 `messages` 里，主上下文很快膨胀，既浪费 Token，又容易让模型分心。
 
-`s06` 加入一个 `task` 工具：主 agent 把一段子任务交给 subagent，subagent 用自己的 `messages[]` 跑完，只把最终摘要交回主对话。
+## 解决方案
 
-## 新增能力
-
-本章不是替换 s05 的计划能力，而是在保留 `todo_write` 的基础上，新增子代理。
-
-- `task`：启动一次性 subagent。
-- subagent 有独立上下文。
-- subagent 可以使用基础工具。
-- 父 agent 只收到最终摘要，不收中间过程。
-
-## 流程图
+我们把子代理做成一个普通的 `task` 工具，背后调用 `spawnSubagent(description, confirm)`，让它在只含一条 `user` 任务描述的新 `messages` 里跑完循环，返回时丢弃所有中间流水，只交回最后一段文本或兜底提示：
 
 ```mermaid
 flowchart TD
   subgraph PARENT["父 Agent"]
-    PM["messages"] --> PL["LLM"]
-    PL --> PH["handlers<br/>bash · read · write ..."]
-    PH -->|普通工具结果| PM
-    PL --> TASK["task 工具"]
+    PM["父 messages"] --> PL["LLM"]
+    PL --> PH["常规 handlers<br/>bash · read · write ..."]
+    PH --> PM
+    PL --> TASK["await task(description)"]
   end
-  subgraph SUB["子 Agent：全新上下文"]
-    SM["messages = [description]<br/>不继承父对话历史"] --> SL["LLM"]
-    SL -->|调工具，最多 30 轮| SH["subHandlers<br/>没有 task，不能再派子 Agent"]
+  subgraph SUB["子 Agent（独立上下文）"]
+    SM["全新 messages<br/>1 条 user 任务描述"] --> SL["LLM（最多 30 轮）"]
+    SL -->|调工具，过 PreToolUse| SH["subHandlers<br/>禁用 task · todo_write"]
     SH --> SM
-    SH -.-> DROP["中间的工具调用和结果在返回时丢弃"]
-    SL -->|完成| OUT["只取最后一段文本摘要"]
+    SL -->|完成或超 30 轮| OUT["最终文本 / 兜底提示<br/>返回后丢弃中间消息"]
   end
-  TASK -->|① 任务描述| SM
-  OUT -->|② 摘要作为 tool 结果| PM
-```
-```text
-s06: Subagent — spawn sub-agents with fresh messages[] for context isolation.
-
-  Parent Agent                           Subagent
-  +------------------+                  +------------------+
-  | messages=[...]   |                  | messages=[task]  | <-- fresh
-  |                  |   dispatch       |                  |
-  | tool: task       | ---------------> | own while loop   |
-  |   prompt="..."   |                  |   bash/read/...  |
-  |                  |   summary only   |   (max 30 turns) |
-  | result = "..."   | <--------------- | return last text |
-  +------------------+                  +------------------+
-        ^                                      |
-        |       intermediate results DISCARDED  |
-        +--------------------------------------+
+  TASK -->|① 传入描述| SM
+  OUT -->|② 作为 tool 结果回填| PM
 ```
 
-## 为什么这一步重要
-
-subagent 的重点不是“多一个人”，而是“隔离上下文”。
-
-主 agent 不需要把所有搜索、试错、读文件细节都背在当前对话里。它只需要拿到一句可靠结论，然后继续推进主目标。
-
-## 新增函数速览
-
-- `spawnSubagent(description, confirm)`：用一份新的 `messages[]` 启动子代理，让探索性任务在干净上下文里运行。
-- `agentLoop(messages, confirm)`：在 s05 基础上支持异步 handler，所以 `task` 工具可以等待子代理完成后再回灌摘要。
-
-## 关键代码
-
-`task` 只是一个新工具，它的 handler 会启动 `spawnSubagent()`：
-
-```js
-tool("task", "Launch a subagent to handle a complex subtask. Returns only the final summary.", {
-  type: "object",
-  properties: { description: { type: "string" } },
-  required: ["description"],
-});
-```
-
-子代理的核心是一个新的 `messages[]`：
-
-```js
-async function spawnSubagent(description, confirm) {
-  const messages = [{ role: "user", content: description }];
-  for (let turn = 0; turn < MAX_SUB_TURNS; turn += 1) {
-    const { message } = await callLlm(messages, { system: SUB_SYSTEM, tools: subTools });
-    messages.push(message);
-    if (!message.tool_calls?.length) return message.content || "(subagent returned no text)";
-    // 工具结果只留在子代理自己的 messages 里。
-  }
-}
-```
-
-父 agent 最后只会收到这个函数返回的摘要，中间工具过程不会塞回父 `messages`。
-
-## 代码入口
-
-- JS：[s06-subagent.js](./s06-subagent.js)
-- Test：[s06-subagent.test.js](./s06-subagent.test.js)
-
-## 运行
-
-```bash
-node code-agent-course/s06-subagent.js
-```
-
-## 参考实现提醒
-
-Subagent 的关键不是“再开一个函数”，而是上下文隔离：
-
-- 子 agent 用新的 `messages[]` 开始，父 agent 不继承它的中间推理和工具流水。
-- 父 agent 只拿最终摘要，避免主上下文被探索过程污染。
-- 教程版通常禁止子 agent 再继续创建子 agent，防止递归失控。
+这里同时做好三项约束：子代理禁用 `task` 和 `todo_write` 防止无限套娃，最多发起 30 次模型调用兜底，工具执行依然要过 `PreToolUse` 权限门。父循环会 `await` 等子代理跑完再继续，双方仍共享当前工作目录和文件工具。平时顺手查一两个文件让主代理直接读就行，只有需要大范围翻文件时才值得拆出子上下文。
 
 ## 测试 Prompt
 
@@ -119,32 +38,37 @@ Subagent 的关键不是“再开一个函数”，而是上下文隔离：
 派一个子代理检查当前目录有哪些 Markdown 文件，主代理只需要返回子代理的总结。
 ```
 
-观察重点：主代理应该调用 `task`，探索过程留在子代理上下文里，主对话只拿到最终摘要。
-
-## 一句话总结
-
-`s06` 把探索性工作放进独立上下文，让父 agent 保持主线清晰。
+当模型按要求调用 `task` 委派调研时，所有查目录的中间工具输出都留在子代理内部，主对话只拿到一段最终总结。
 
 ## 扩展阅读：商业级 Agent 怎么做子代理
 
-子代理的关键不是“多调一次模型”，而是给子任务一个独立上下文和清晰返回边界：
+商业级产品的子代理形态各异，但核心同样是独立上下文和清晰的返回边界：
 
-- Claude Code：普通 subagent 使用独立上下文，完成后只把结果返回主对话；子代理还可以单独限制工具。参考 [Claude Code Subagents](https://code.claude.com/docs/en/sub-agents)。
-- Codex：开源实现使用 `spawn_agent` / `wait_agent` / `close_agent` 管理子线程生命周期，比本章的一次性函数多了状态和回收。参考 [Codex agent tool 源码](https://github.com/openai/codex/blob/main/codex-rs/tools/src/agent_tool.rs)。
-- opencode：自定义 agent 可以标记为 `subagent`，并通过 `task` 工具调用，同时能为它单独设置权限。参考 [OpenCode Agents](https://opencode.ai/docs/agents/)。
+- **Claude Code**：普通 subagent 拥有独立上下文，可单独限制可用工具，完成后只把最终结果返回主对话。参考 [Claude Code Subagents](https://code.claude.com/docs/en/sub-agents)。
+- **Codex**：通过 `spawn_agent`、`wait_agent` 等工具管理子线程的创建、等待与回收，比一次性函数多了完整的生命周期控制。参考 [OpenAI Codex](https://github.com/openai/codex)。
+- **opencode**：支持将自定义 agent 配置为 `subagent` 模式供主代理委派，还能单独配置工具与权限。参考 [OpenCode Agents](https://opencode.ai/docs/agents/)。
 
-本章的 `spawnSubagent()` 是最小实现：新建 `messages[]`，跑自己的 loop，只把最终摘要还给父 agent。
+**新建一份干净的 `messages[]`，跑完只交回摘要，就是 Subagent 最本质的抽象。**
 
+## 本地运行与测试
+
+交互运行（从仓库根目录执行）：
+
+```bash
+cd code-agent-course && node s06-subagent.js
+```
+
+离线单测（在仓库根目录执行，无需 API Token）：
+
+```bash
+pnpm vitest run code-agent-course/s06-subagent.test.js
+```
 
 ## 博客代码演进
 
-下面 5 个 patch 专门用于博客右侧的代码切换。第一步基于 `s05-todo-write.js`，后面的每一步都继续修改上一帧，最后必须得到完整的 `s06-subagent.js`。
-
-每一步的代码都可以运行。前四步都在准备子代理：它的提示词、它能用的工具、它自己的循环。这些代码写好后先放着，行为和 s05 一样；最后一步把 `task` 工具交给模型，子代理才真正用起来。
-
 ### 1. 给子代理写一份提示词
 
-子代理也是在调用同一个模型，区别只在于给它什么提示词、什么消息、什么工具。先准备提示词 `SUB_SYSTEM`：完成任务，返回一段简短的总结，不要再往下派任务。
+子代理调的依然是同一个模型，区别只在给它什么提示词、消息和工具。先加一条简短的 `SUB_SYSTEM`：专注完成手头子任务，返回精炼摘要，不要再往下派任务。这一步只是先备好常量，程序运行行为还没变，等第 5 帧接上 `task` 工具后才会启用。
 
 ```diff agent-step
 @@
@@ -157,7 +81,7 @@ Subagent 的关键不是“再开一个函数”，而是上下文隔离：
 
 ### 2. 划定子代理能用的工具
 
-子代理的工具是从父代理的工具里筛出来的，去掉两个：`task`（否则子代理还能再派子代理，没完没了）和 `todo_write`（一个小任务不需要再列计划）。`subTools` 是给模型看的 schema，`subHandlers` 是对应的执行函数，两边用同一份排除名单，保证一致。`MAX_SUB_TURNS` 限制子代理最多跑 30 轮，防止它停不下来。
+从父代理的 `tools` 和 `handlers` 里筛出子代理可用的子集，用同一份 `SUB_EXCLUDE` 剔除 `task`（防无限递归）和 `todo_write`（小任务不必另列计划），保证两张表严格一致。再设 `MAX_SUB_TURNS = 30` 限制子代理最多发起 30 次模型调用。这一步仍在准备配置，下一帧才写出子循环。
 
 ```diff agent-step
 @@
@@ -175,7 +99,7 @@ Subagent 的关键不是“再开一个函数”，而是上下文隔离：
 
 ### 3. 子代理的循环：从一份全新的 messages 开始
 
-`spawnSubagent` 的第一行就是本章的核心：`messages` 是一个新数组，里面只有一条任务描述。父代理之前聊过什么，子代理完全看不到。接着是一个熟悉的循环：调用模型，模型不再请求工具时，把它最后说的那段话作为返回值。函数返回后，这个 `messages` 数组就被丢掉，中间过程不会进入父代理的上下文。这一步先搭骨架，执行工具的部分下一步补。
+`spawnSubagent` 第一行就是本章核心：`messages` 是全新数组，只装一条 `{ role: "user", content: description }`，完全不继承父对话历史。模型不再调工具时返回最终文本（空文本或超 30 轮各有兜底提示），函数一结束局部 `messages` 就随作用域丢弃。这一帧先立起循环外壳，下一帧补齐工具执行与回填后才能跑通工具闭环。
 
 ```diff agent-step
 @@
@@ -203,7 +127,7 @@ Subagent 的关键不是“再开一个函数”，而是上下文隔离：
 
 ### 4. 子代理执行工具，同样要过权限
 
-补上子循环里执行工具的部分，写法和主循环一样：解析参数、查 `subHandlers`、把结果用 `tool_call_id` 放回 `messages`。要注意的是，执行前同样触发 `PreToolUse`。上下文是隔离的，但权限不是：子代理想执行危险命令，一样会被拦截或者问用户。
+补齐子循环里的工具执行逻辑：解析参数、查 `subHandlers`、用 `tool_call_id` 把结果塞回子代理自己的 `messages`。特别注意：上下文是隔离的，但权限不是，子代理调工具前同样要触发 `PreToolUse`，危险命令照样拦截或问用户。
 
 ```diff agent-step
 @@
@@ -225,7 +149,9 @@ Subagent 的关键不是“再开一个函数”，而是上下文隔离：
 
 ### 5. 把 task 工具交给模型
 
-最后把子代理接到父代理上。`tools` 里加上 `task` 的 schema，参数只有一个 `description`；`handlers` 里加一行，调用 `spawnSubagent`。因为子代理是异步的，而且可能要问用户，主循环调用工具时改成 `await handler(args, confirm)`。系统提示词补一句：复杂的子问题可以用 `task` 派给子代理。现在父代理派出任务后，只会收到一段总结。
+最后把子代理挂进父代理：`tools` 增加 `task` 的 schema，`handlers` 指向 `spawnSubagent`，并更新 `SYSTEM` 告知模型遇到复杂子问题可以派子代理。因为 `spawnSubagent` 是异步的且可能需要用户确认，主循环执行工具改为 `await handler(args, confirm)`，提示符切到 `"s06 >> "`。
+
+> **本章思考题**：先确认一下权限边界：如果让子代理执行 `rm notes.txt`，终端还会弹出 `[y/N]` 确认吗？（回头看第 4 帧的 `PreToolUse` 就知道答案。）另外，项目里还有代码规范、发布流程、排障手册等专业文档，全塞进 `SYSTEM` 每轮都在烧 Token。能不能只在提示词里放目录，模型需要时再按需加载全文？下一章 `s07` 我们来做 Skill Loading。
 
 ```diff agent-step
 @@
@@ -264,10 +190,6 @@ Subagent 的关键不是“再开一个函数”，而是上下文隔离：
 ```
 
 ## 和上一步的关键代码 diff（不含 helper.js）
-
-下面只保留 s05 到 s06 的关键变化：新增 `task` 工具、子代理循环、以及父 loop 对异步 handler 的支持。
-
-这里展示的是最能说明本章新增机制的关键变化；完整差异以相邻 JS 文件为准。
 
 ```diff
 --- s05-todo-write.js
@@ -320,4 +242,7 @@ Subagent 的关键不是“再开一个函数”，而是上下文隔离：
 +        output = handler ? await handler(args, confirm) : `Unknown tool: ${name}`;
 @@
 +export { spawnSubagent };
+@@
+-    promptLabel: "s05 >> ",
++    promptLabel: "s06 >> ",
 ```

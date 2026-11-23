@@ -4,13 +4,13 @@
 
 很多人觉得 Code Agent 很神秘，其实把窗户纸捅破，**它核心就是一个 `while` 循环加上几把趁手的工具。** 我们用纯 JavaScript 从 `s00` 到 `s18` 拆成 19 节、一百多个小步，像打怪升级一样，左边聊思路，右边只聚焦当前改动的那几行代码，一步步带你把完整的 Agent 搭出来。
 
-为了让新手零门槛上手，你不需要在本地配任何环境。直接在下方填好模型供应商和 API Token（仅保存在浏览器本地，不上传服务器），读到任意一步，点右侧代码框右上角的运行按钮，就能在浏览器终端里直接练习。我们直接从 `s00` 开始。
+为了让新手零门槛上手，你不需要在本地配任何环境。在下方填好模型供应商和 API Token（仅保存在浏览器本地，不上传本站服务器，只在请求模型时发往所选服务商）。滚到 `s00` 最后一帧或任意章节末帧，点右侧代码框右上角的运行按钮，就能在浏览器终端里直接对话练习。我们直接从 `s00` 开始。
 ## !!steps s00：HTTP 调用 - 先和模型接通电话
 把大模型看成一位坐在远程办公室的聪明实习生，给他派活之前，第一步是先把电话接通。[learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 直接从 `s01` 开始写循环，我们特意在前面补上这节 `s00`：**先用 20 多行代码跑通一次最朴素的 HTTP 对话，拿到第一个可见的正反馈。**
 
 ### 问题
 
-大模型不在本地运行，而且本身没有记忆。每次对话，程序都必须把请求地址、API Token、模型名和完整的历史 `messages` 数组一起通过 HTTP 发过去，才能拿回它的回答。
+大模型不在本地运行，而且本身没有记忆。每次发 HTTP 请求，程序需要把 API Token 放进 `Authorization` 请求头，再把模型名和历史 `messages` 数组放进 JSON 请求体发给对应接口。本章靠每次重发完整 `messages` 数组来维持多轮上下文。
 
 ### 解决方案
 
@@ -18,12 +18,11 @@
 
 ### 流程图
 
-```text
-终端输入
-   ↓  runChatCli 追加进 messages
-ask(messages)
-   ↓  callLlm 发送 POST /chat/completions
-取出 choice.message.content 打印回复
+```mermaid
+flowchart TD
+  IN["终端输入问题"] --> CLI["runChatCli<br/>追加进 messages"]
+  CLI --> ASK["ask(messages)<br/>callLlm 发 POST 请求"]
+  ASK --> OUT["取出 message.content 打印"]
 ```
 
 ---
@@ -63,7 +62,7 @@ export async function ask(messages) {
 ```
 
 ## !!steps
-新增 `main()`，把 `ask` 挂到 `runChatCli` 的 `onPrompt` 回调上。每次你在终端输入一句话回车，`runChatCli` 都会把你的问题和模型回复按顺序推进同一个 `messages` 数组，整包重发给模型，多轮上下文就接上了。
+新增 `main()`，把 `ask` 挂到 `runChatCli` 的 `onPrompt` 回调上。每次你在终端输入一句话回车，`runChatCli` 都会把问题和模型回复按顺序推进同一个 `messages` 数组再整包重发。这一帧只定义了 `main()`，下一步加上启动守卫后运行才会出现 `prompt >> `。
 
 本次代码变化：7 行。
 
@@ -90,7 +89,7 @@ async function main() {
 ```
 
 ## !!steps
-最后用 `isMainModule` 包住 `main()`：只有直接运行当前文件时才启动命令行，跑单测 `import { ask }` 时不会卡住等待输入。现在填好 API Token 点右上角运行，就能和模型对话了（输入 `q` 或 `exit` 退出）。
+最后用 `isMainModule` 包住 `main()`：只有直接运行当前文件时才启动命令行，跑单测 `import { ask }` 时不会卡住等待输入。现在填好 API Token 点右上角运行按钮，看到 `prompt >> ` 就能和模型对话了（输入 `q` 或 `exit` 退出）。
 
 本次代码变化：7 行。
 
@@ -282,7 +281,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-搭起 `agentLoop` 外层循环：每次调 `callLlm` 时把 `SYSTEM` 和 `bashTool` 一起传过去。如果返回的 `message.tool_calls` 为空，说明模型不需要调工具，直接返回文本退出循环。
+搭起 `agentLoop` 外层循环：每次调 `callLlm` 时把 `SYSTEM` 和 `bashTool` 一起传过去，如果返回的 `message.tool_calls` 为空就直接返回文本退出。这一帧先把循环外壳和无工具时的退出分支立住（CLI 入口仍在走旧的 `ask`），下一帧补上工具执行与结果回填就能跑通闭环。
 
 本次代码变化：11 行。
 
@@ -430,7 +429,7 @@ if (isMainModule(import.meta.url)) {
 列出当前目录下所有 JavaScript 文件，并告诉我一共有多少个。
 ```
 
-你会看到终端先打印 `$ ls ...` 或 `$ find ...` 的真实执行结果，再给出准确数量。
+你会看到终端先打印执行的命令与输出预览（最多显示前 500 字符），前提是模型决定调用 `bash` 查目录；随后循环把完整输出回灌给模型，整理出文件列表和数量。
 
 ### 扩展阅读：商业级 Agent 怎么做主循环
 
@@ -524,20 +523,20 @@ if (isMainModule(import.meta.url)) {
 
 ### 解决方案
 
-我们把工具拆成名字一一对齐的两张表，并配齐读写改查 5 件套（`helper.js` 里的文件函数已内置 `safeJoin` 防止路径越界）：
+我们把工具拆成名字一一对齐的两张表，并配齐读写改查 5 件套（`helper.js` 里的文件函数会先用 `safeJoin` 检查解析后的路径是否仍在工作目录下）：
 
 ```mermaid
 flowchart TD
   U["用户提问"] --> M["messages"]
   M --> L["LLM"]
-  L --> Q{"有 tool_calls 吗？"}
-  Q -->|没有| R["返回结果"]
-  Q -->|有| H["handlers[call.function.name] 查表"]
-  subgraph NEW["s02 工具箱（5 件套）"]
-    H --> T1["bash · glob"]
-    H --> T2["read_file · write_file · edit_file"]
+  L --> Q{"有 tool_calls？"}
+  Q -->|没有| R["返回最终文本"]
+  Q -->|有| H["handlers[name] 查表"]
+  subgraph BOX["s02 工具箱（5 件套）"]
+    H --> T["bash · glob<br/>read_file · write_file · edit_file"]
   end
-  T1 & T2 --> OUT["包装成 tool 消息"] --> M
+  T --> OUT["结果包装为 tool 消息"]
+  OUT --> M
 ```
 
 `agentLoop` 只管拿 `call.function.name` 去 `handlers` 里查函数：查到就传参执行，查不到就返回 `"Unknown tool: ..."`。
@@ -854,10 +853,10 @@ if (isMainModule(import.meta.url)) {
 ### 测试 Prompt
 
 ```text
-创建 s02-tmp-note.txt，写入 hello s02，然后读出来确认内容。
+用 write_file 创建 s02-tmp-note.txt 并写入 hello s02，再用 read_file 读出来确认内容。
 ```
 
-终端会依次打印 `> write_file:` 和 `> read_file:`，不再绕弯拼 shell 命令。
+当模型按要求调用这两个文件工具时，终端会依次打印 `> write_file:` 和 `> read_file:`，不再绕弯拼 shell 命令。
 
 ### 扩展阅读：商业级 Agent 怎么做工具扩展
 
@@ -865,20 +864,20 @@ if (isMainModule(import.meta.url)) {
 
 ```mermaid
 flowchart TD
-  IN["模型一次返回 5 个工具调用<br/>read A · glob · bash ls · write B · read C"]
+  IN["模型一次返回 5 个调用<br/>read A · glob · bash ls · write B · read C"]
   IN --> T1
   IN --> C1
-  subgraph TEACH["教学版：按顺序串行执行"]
+  subgraph TEACH["教学版：顺序串行"]
     T1["1. read A"] --> T2["2. glob"] --> T3["3. bash ls"] --> T4["4. write B"] --> T5["5. read C"]
   end
-  subgraph CC["Claude Code：只读并发、写操作串行"]
+  subgraph CC["商业 Agent 示意：只读并发、写串行"]
     C1["Batch 1 并发<br/>read A · glob · bash ls"] --> C2["Batch 2 串行<br/>write B"] --> C3["Batch 3 并发<br/>read C"]
   end
 ```
 
-教学版统一按顺序串行跑，最稳妥好懂；而像 Claude Code 会把连续的只读调用打包并发提速，遇到写文件再切回串行防冲突。
+教学版统一按顺序串行执行，最稳妥好懂。而在生产级设计（例如 Claude Code 等产品）中，通常会把可安全并行的只读调用打包并发提速，遇到写操作再切回串行防冲突，上图展示的就是这种分批调度示意。
 
-> **本章思考题**：工具配齐后，Agent 干活利索多了，但闯祸半径也跟着变大了。万一你随口说句“清理一下项目”，模型调 `bash` 跑起 `rm -rf /` 甚至误删重要文件，现在的循环可是拿来就执行的！怎么在不破坏查表结构的前提下加一道“权限门”？下一章 `s03` 我们接着改。
+> **本章思考题**：工具配齐后，Agent 干活利索多了，但闯祸半径也跟着变大了。虽然 `helper.js` 的 `runBash` 里临时硬编码了几条极端黑名单，但万一你随口说句“清理一下项目”，模型调 `bash` 跑起 `rm notes.txt`，现在的循环还是拿来就执行，连问都不问一声。怎么在不破坏查表结构的前提下，在工具执行前加一道分级“权限门”？下一章 `s03` 我们接着改。
 
 ```js ! agent.js range=23:92
 import {
@@ -978,111 +977,47 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps s03：Permission - 执行前先过权限门，危险操作不再无脑放行
-接着上一章 `s02` 的思考题往下走：配齐读写改查五件套之后，这位远程实习生干活利索多了，但 `agentLoop` 对模型的每一次工具调用都是拿来就执行。你随口说一句“清理一下项目”，模型理解偏了，调起 `bash` 跑一条 `rm -rf /`，程序也会老老实实交给 shell。
+上一章 `s02` 配齐了读写改查 5 件套，虽然 `helper.js` 的 `runBash` 里临时硬编码了几条极端黑名单，但 `agentLoop` 对所有工具调用还是直接放行。你随口说一句“清理一下项目”，模型如果跑一条 `rm notes.txt`，程序连问都不问就直接删掉。
 
-公司给新人开权限，从来不是“信任就全给，不信任就全收”，而是分级：看文档随便看，删库要审批，改生产配置直接不行。这正是 `s03`（对应 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 `s03_permission`）要练的内力：**模型只负责提出想做什么，程序在执行前判断这次能不能做；判断结果只有三档：放行、拒绝、问用户。**
+这一章（对应 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 `s03_permission`）我们在执行前立起一道权限门：**模型只负责提出想做什么，程序在执行前判定这次能不能做，结论只有三档：放行、拒绝、问用户。**
 
 ### 问题
 
-`s02` 之后，Agent 有了 5 个工具，能力越强，闯祸的半径也越大。同样是“清理一下项目”，模型可能生成两种完全不同的命令：
+同样是“清理一下项目”，模型生成的命令风险天差地别：
 
 | 模型生成的命令 | 风险 | 理想处理 |
 |---|---|---|
 | `rm -rf /` | 不可逆，后果灾难性 | 直接拒绝，问都不用问 |
-| `rm notes.txt` | 删的可能正是你要删的 | 先停下来问你一句 |
-| `ls`、`read_file` | 只读，不改任何东西 | 直接放行 |
+| `rm notes.txt` | 删的可能正是目标文件 | 先停下来问你一句 |
+| `ls`、`read_file` | 只读，不改任何文件 | 直接放行 |
 
-现在的 `s02` 分不清这三种情况。你可能会想，在系统提示词里写一句“不要执行危险命令”不就行了？提示词只是提醒，模型可能听也可能不听；**安全边界不能押在模型自觉上，必须由代码在执行前把关。**
-
-### 本章目标
-
-在 `s02` 多工具循环的基础上，给每一次工具执行前加一道权限门：新增纯函数 `checkPermission()` 返回 `allow / deny / ask` 三档结论，新增 `approved()` 在 `ask` 时向用户确认，主循环的查表分发结构保持不变。
+靠系统提示词叮嘱模型“别删库”不靠谱，提示词只是提醒，模型可能不听。**安全边界不能押在模型自觉上，必须由代码在执行前硬性把关。**
 
 ### 解决方案
 
-我更推荐把“判断”和“执行”拆开：`checkPermission()` 只看工具名和参数给结论，不执行命令、不读写文件、不问用户；`agentLoop` 拿到结论后再决定是执行 handler、直接拒绝，还是先问用户。
+我们把“判断”和“执行”拆开：纯函数 `checkPermission()` 只看工具名和参数返回三档决策对象，`agentLoop` 拿到结论后再决定是放行、拦截还是先调 `approved()` 问用户：
 
 ```mermaid
 flowchart TD
-  M["messages"] --> L["LLM"]
-  L --> Q{"有 tool_calls 吗？"}
-  Q -->|没有| R["返回结果"]
-  Q -->|有| P
-  subgraph NEW["s03 新增：执行前的权限检查"]
-    P["闸门 1：DENY 黑名单"] --> P2["闸门 2：RISKY 风险匹配"] --> P3["闸门 3：approved 用户审批"]
-  end
-  P3 -->|通过| H["handlers<br/>bash · read_file · write_file ..."]
-  P -->|命中黑名单| D["拒绝结果"]
-  P3 -->|用户拒绝| D
-  H -->|工具结果| M
-  D -->|拒绝原因也作为工具结果| M
+  U["用户输入"] --> M["messages"]
+  M --> L["LLM"]
+  L --> Q{"有 tool_calls？"}
+  Q -->|没有| R["返回最终文本"]
+  Q -->|有| CP["checkPermission(name, args)"]
+  CP -->|allow| H["handlers 执行工具"]
+  CP -->|ask| AP{"approved 确认 [y/N]"}
+  AP -->|y 允许| H
+  CP -->|deny| D["返回拒绝原因"]
+  AP -->|N 拒绝| D
+  H --> M
+  D --> M
 ```
-```mermaid
-flowchart TD
-  IN["工具调用进入 checkPermission(name, args)"] --> G1{"闸门 1：DENY 黑名单<br/>rm -rf / · sudo · shutdown"}
-  G1 -->|命中| DENY["deny 直接阻止"]
-  G1 -->|未命中| G2{"闸门 2：RISKY 风险列表<br/>rm  · > /etc/ · chmod 777"}
-  G2 -->|未命中| ALLOW["allow 直接放行"]
-  G2 -->|命中| G3{"闸门 3：approved 用户审批 [y/N]"}
-  G3 -->|y 允许| ALLOW
-  G3 -->|N 拒绝| DENY
-```
-三档结论分别对应三种处理：
 
-| 决策 | 含义 | 例子 |
-|---|---|---|
-| `allow` | 直接放行 | `read_file`、`glob`、普通命令 |
-| `deny` | 永远拒绝 | `rm -rf /`、`sudo`、`shutdown` |
-| `ask` | 先问用户 | `rm notes.txt`、`chmod 777` |
-
-这里的目标不是做一个完美的安全沙箱，而是在 Agent 运行时里立住一条关键边界：**模型可以提出行动意图，但执行前必须经过系统判断。**
-
-### 新增能力
-
-- **硬黑名单 `DENY`**：`rm -rf /`、`sudo`、`shutdown` 这类命令永远拒绝，后面的确认流程也绕不过去。
-- **风险名单 `RISKY`**：`rm `、`chmod 777`、写 `/etc/` 这类命令不直接拒绝，而是暂停下来交给用户拍板。
-- **拒绝也回灌**：被拦下的调用同样带着 `tool_call_id` 返回一条 `tool` 消息，模型知道这条路走不通，会换方案或者如实告诉你做不了。
-
-### 参考实现提醒
-
-在拆开看具体源码前，有三个边界值得你提前记住：
-
-- **硬拒绝优先级最高**：黑名单必须先于风险名单判断，命中后不能被后面的确认流程绕过。
-- **`ask` 不是失败**：它是把风险决策交还给用户，同意了就照常执行。
-- **字符串匹配只是最小模型**：`command.includes()` 会误伤（`rm -rf /tmp/x` 也包含 `rm -rf /`），也能被绕过（`bash -c "s""udo ..."`）。教学版先用它把“执行前判断”这条边界立起来，真实产品会叠加命令解析、白名单和系统级沙箱。
-
-### 新增函数速览
-
-- `checkPermission(name, args)`：本章的权限门，按工具名和参数返回 `allow`、`ask` 或 `deny`，是一个可以单独测试的纯函数。
-- `approved(confirm, reason, name, args)`：结论是 `ask` 时，把工具名和参数展示给用户，只有回答 `y` 或 `yes` 才算同意；没有传入 `confirm` 时一律当作拒绝。
-- `agentLoop(messages, confirm)`：在 `s02` 循环的基础上多了一个 `confirm` 参数，执行 handler 之前先过 `checkPermission()`。
-
-### 流程图
-
-```text
-LLM 返回 tool_calls
-      |
-      v
-JSON.parse(arguments)
-      |
-      v
-checkPermission(name, args)
-      |
-      +-- deny  -> "Permission denied: ..."（不执行）
-      |
-      +-- ask   -> approved() 问用户 [y/N]
-      |              +-- y -> 执行 handler
-      |              +-- N -> "Permission denied by user."
-      |
-      +-- allow -> 执行 handler
-      |
-      v
-不管执行还是拒绝，结果都作为 tool 消息回灌 messages
-```
+记住两条原则：`DENY` 优先级高于 `RISKY`（`rm -rf /` 也包含 `"rm "`，必须先拦死），而且被拒绝的调用同样要带着 `tool_call_id` 把拒绝原因回灌给模型。
 
 ---
 
-我们先从最轻的一步开始：改系统提示词，在里面加一句“破坏性操作需要用户批准”，让模型提前知道有这条规矩。不过提示词只是提醒，模型不一定听，真正的保证要靠后面写进代码的权限门。工具列表和 `handlers` 分发表沿用 `s02`，一行不动。
+先迈出最轻的一步：改写 `SYSTEM` 提示词，提前告诉模型破坏性操作需要用户批准。提示词只是提醒，真正的拦截靠后面写进代码的权限门；`tools` 和 `handlers` 沿用 `s02`，一行不动。
 
 本次代码变化：2 行。
 
@@ -1180,7 +1115,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-规则先用最朴素的办法表达：两个字符串数组。`DENY` 是硬黑名单，命中就永远拒绝，比如 `sudo`、`rm -rf /`；`RISKY` 是风险名单，命中后不直接拒绝，而是停下来问用户。这一步只是把数据摆出来，还没有任何地方用到它们，程序行为和 `s02` 完全一样。
+规则先用最朴素的两个字符串数组表达：`DENY` 是硬黑名单，命中就永远拒绝；`RISKY` 是风险名单，命中后停下来问用户。这一步先把数据摆出来，程序行为和 `s02` 一样。
 
 本次代码变化：3 行。
 
@@ -1281,7 +1216,20 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-接着写判定函数 `checkPermission`：接收工具名和参数，返回 `allow`（放行）、`deny`（拒绝）、`ask`（问用户）三者之一。它是一个纯函数，不执行命令、不读写文件、不打印，只看输入给结论，所以很容易单独测试。注意黑名单写在风险名单前面：`rm -rf /` 也包含 `"rm "`，先判黑名单才能保证它被直接拒绝。目前只检查 `bash` 命令，其他工具一律放行。
+新增纯函数 `checkPermission(name, args)`：只对 `bash` 命令做名单匹配，返回带 `decision` 字段（`allow` / `deny` / `ask`）和可选 `reason` 的结果对象。它不碰终端和文件，写单元测试很方便；真正弹出 `[y/N]` 的 `approved()` 留到后面在 `agentLoop` 里处理。
+
+```mermaid
+flowchart TD
+  IN["checkPermission(name, args)"] --> B{"是 bash 工具？"}
+  B -->|否| A["decision: allow"]
+  B -->|是| G1{"命中 DENY？"}
+  G1 -->|是| D["decision: deny<br/>附带拒绝原因"]
+  G1 -->|否| G2{"命中 RISKY？"}
+  G2 -->|是| K["decision: ask<br/>交由 agentLoop 审批"]
+  G2 -->|否| A
+```
+
+注意 `DENY` 必须排在 `RISKY` 前面：`rm -rf /` 同时包含 `"rm "`，先判黑名单才能防止用户手滑按了 `y`。
 
 本次代码变化：11 行。
 
@@ -1393,7 +1341,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-现在把判定函数接进循环：解析完参数后先调用 `checkPermission`，结论是 `deny` 就不执行工具，直接把 `Permission denied: ...` 当作工具结果交还给模型。模型看到这句话，会换一种做法或者告诉你做不了。被拒绝时同样要回一条带 `tool_call_id` 的 `tool` 消息，否则对话格式就断了。这一步之后，黑名单命令已经真的执行不了。
+把 `checkPermission` 接进 `agentLoop`：解析完参数先过门，遇到 `deny` 就不查 `handlers`，直接把 `Permission denied: ...` 当作工具结果写回。这里不能静默跳过，必须照常推一条带 `tool_call_id` 的 `tool` 消息，对话格式才不会断，模型也才知道这条路走不通。
 
 本次代码变化：11 行。
 
@@ -1512,7 +1460,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后补上 `ask` 这条路。新增 `approved`：用 `confirm` 把工具名和参数展示给用户并等待输入，只有回答 `y` 或 `yes` 才算同意；没有传入 `confirm` 时一律当作拒绝，宁可保守。`agentLoop` 多了一个 `confirm` 参数，由 `runChatCli` 提供的 `ask` 传进来；循环开头顺手用解构写短了一些，逻辑和原来相同。现在点击运行，输入“删除 notes.txt”，你会看到终端停下来问你 `允许? [y/N]`。
+最后补上 `ask` 分支。新增 `approved()` 把工具名和参数展示给用户，只有输入 `y` 或 `yes` 才放行；没有传入 `confirm` 时默认拒绝，既安全又方便离线测试。`main()` 把 `runChatCli` 提供的 `ask` 传给 `agentLoop`，顺手把提示符改成 `"s03 >> "`。
 
 本次代码变化：22 行。
 
@@ -1522,19 +1470,19 @@ if (isMainModule(import.meta.url)) {
 运行 rm -rf /
 ```
 
-观察重点：危险命令在执行前就被权限门拒绝，终端不会弹出确认，模型收到 `Permission denied: 命中黑名单.` 后会告诉你它做不了。
+当模型决定调用 `bash` 执行该命令时，不会走到 `runBash`，也不会弹确认，权限门直接返回 `Permission denied: 命中黑名单.`。再试一句“用 `bash` 删除 `notes.txt`”，就能看到终端停下来询问 `允许? [y/N]`。
 
 ### 扩展阅读：商业级 Agent 怎么做权限边界
 
-权限系统的核心不是“拦几个危险字符串”，而是把模型意图和真实动作隔开：
+教学版的 `command.includes()` 只是最小模型（可能误伤，也可能被绕过），商业级产品会叠加命令解析与系统级沙箱，但分层思路相通：
 
-- **Claude Code**：公开资料和源码快照里能看到 toolPermission hooks、plan mode gate、sandbox toggle 和权限 UI。模型想执行动作，必须先经过权限层。
-- **Codex**：架构里有 execpolicy、approval 和 sandbox 三层。execpolicy 先做最严格的规则决策，再决定是否请求用户批准，最后才进入系统级沙箱执行。
-- **opencode**：公开架构里有 PermissionV2 UX gate，把权限体验放在工具执行前，重点是让用户看得懂、批得了。
+- **Claude Code**：通过 tool permission hooks、plan mode gate 和 sandbox 开关，把模型意图与真实执行隔开。
+- **Codex**：拆成 execpolicy、approval、sandbox 三层，先按策略判定，再决定是否向用户申请批准，最后进入沙箱执行。
+- **opencode**：在工具执行前设置 PermissionV2 交互闸门，重点是让用户看得懂每次请求并方便审批。
 
-本章的黑名单和确认框只是最小模型，但内力是相通的：**凡是不可逆的动作，都要在“意图”和“执行”之间留一道由代码控制的闸门。** 这条思路放到日常业务里同样成立，比如后台的批量删除、资金操作，也都是“前端提出请求，服务端按规则和审批决定是否执行”。
+**凡是不可逆的动作，都要在“意图”和“执行”之间留一道由代码控制的闸门。**
 
-> **本章思考题**：权限门是直接写在 `agentLoop` 里的。如果接下来还想在每次工具执行前打一条审计日志、执行后检查输出有没有泄露密钥、模型收工时统计这一轮调用了几次工具，难道每加一条规矩都要再改一次主循环吗？能不能在循环里预留几个固定的“挂钩”，让权限判断、日志、统计都挂上去，而主循环自己只管调度？这就是下一章 `s04`（Hooks）要解决的问题。
+> **本章思考题**：权限门现在直接写在 `agentLoop` 里。如果后面还要加工具调用日志、大输出预警、结束统计，每加一条规矩都要改一次主循环吗？能不能在循环里预留几个固定挂钩，让这些能力自己挂上去？下一章 `s04` 我们用 Hooks 来解耦。
 
 ```js ! agent.js range=61:122
 import {
@@ -1662,75 +1610,49 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s04：Hooks —— 挂在循环上，不写进循环里
-新人开始承担更多流程：干活前要打卡，干活后要记录，收工前要总结。如果每条规矩都写进他的主工作步骤里，流程会乱成一团；`s04` 就是给工作流预留挂钩，让这些规矩挂在固定节点上。
+## !!steps s04：Hooks - 扩展逻辑挂在循环上，不再写进循环里
+上一章 `s03` 给工具加上了权限门，但判断分支是直接写死在 `agentLoop` 里的。如果后面还要加工具日志、大输出检查、结束统计，每次都往循环里塞代码，主循环很快就会又长又乱。
 
-参考：[shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 中的 `s04_hooks`。
-
-参考教程的核心是：**扩展逻辑应该挂在 hook 上，而不是不断写进 agent loop。**
-
-我们的 JS 版延续这个思路：保留 `s03` 的权限能力，但把权限判断变成 `PreToolUse` hook。
+这一章（对应 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的 `s04_hooks`）我们给主循环预留生命周期插口：**扩展逻辑应该挂在 Hook 上，而不是写进主循环里；我们顺手把 `s03` 的权限门搬成第一个 `PreToolUse` Hook。**
 
 ### 问题
 
-`s03` 已经能在工具执行前做权限判断。
-
-但如果后面继续加机制，比如：
-
-- 记录每次工具调用
-- 工具执行后检查输出大小
-- 用户输入后注入上下文
-- agent 结束时做统计
-- 后续章节里的 todo、skill、memory、compact
-
-如果这些都写进 `agentLoop()`，主循环很快会变成这样：
-
-循环会越来越难读。
-
-所以 `s04` 要做的事是：**给主循环留插口。**
+真实 Agent 除了调工具，还会不断长出外围需求：用户输入前补上下文、执行前做权限与日志、执行后检查输出大小、结束前做统计或复核。把这些横切逻辑都写进 `agentLoop`，主循环很快会变成一团 `if / else`，越改越脆弱。
 
 ### 解决方案
 
-定义一组生命周期事件，然后允许外部注册回调。
+我们在主循环的 4 个固定节点调用 `triggerHooks(event, ...args)`，外围功能只管用 `registerHook(event, callback)` 挂上去，主循环本身不用再改：
 
 ```mermaid
 flowchart TD
-  U["用户输入"] --> UP["triggerHooks<br/>UserPromptSubmit"]
+  U["用户输入"] --> UP["UserPromptSubmit<br/>contextHook"]
   UP --> M["messages"]
   M --> L["LLM"]
-  L --> Q{"有 tool_calls 吗？"}
-  Q -->|没有| S["triggerHooks Stop"] --> R["返回结果"]
-  Q -->|有| PRE["triggerHooks PreToolUse<br/>permissionHook · logHook"]
-  PRE -->|被拦截| M
-  PRE -->|放行| H["handlers<br/>bash · read_file ..."]
-  H --> POST["triggerHooks PostToolUse<br/>largeOutputHook"]
-  POST -->|结果追加到 messages，循环继续| M
-  REG["registerHook(event, fn)<br/>加检查只需注册，主循环不用改"] -.-> PRE
+  L --> Q{"有 tool_calls？"}
+  Q -->|没有| S["Stop Hook<br/>summaryHook"]
+  S -->|null| R["返回结果"]
+  S -->|续跑文本| M
+  Q -->|有| PRE["PreToolUse<br/>permission · log"]
+  PRE -->|拦截文案| M
+  PRE -->|null| H["handlers 执行工具"]
+  H --> POST["PostToolUse<br/>largeOutputHook"]
+  POST --> M
 ```
-Python 原版源码里的完整结构图是这样：
 
-主循环只负责在关键时刻触发 hook：
+四个生命周期点覆盖了一次对话循环的主干：
 
-具体要做什么，交给注册进去的 callback。
+| 事件 | 触发时机 | 本章挂的 Hook |
+|---|---|---|
+| `UserPromptSubmit` | 用户输入后、进循环前 | `contextHook`（打印目录） |
+| `PreToolUse` | 工具执行前 | `permissionHook`、`logHook` |
+| `PostToolUse` | 工具执行后 | `largeOutputHook`（超长预警） |
+| `Stop` | 模型准备结束时 | `summaryHook`（统计历史工具消息数） |
 
-### 参考实现提醒
-
-Hook 的价值不是“多一层回调”，而是把扩展点固定下来：
-
-- `PreToolUse` 可以拦截工具，但不能绕过更高优先级的安全规则。
-- `PostToolUse` 适合做日志、输出检查、统计，不应该改变已经发生的工具动作。
-- `Stop` 是收尾点，不是随便结束；真实系统里常用它做总结、记忆写入或强制续跑判断。
-
-### 新增函数速览
-
-- `registerHook(event, callback)`：把一个回调挂到指定生命周期事件上。
-- `triggerHooks(event, ...args)`：按顺序执行某个事件上的 hook；如果 hook 返回结果，就可以拦截或改写流程。
-- `permissionHook(name, args, confirm)`：把 s03 的权限判断搬进 `PreToolUse` 生命周期。
-- `logHook()` / `largeOutputHook()` / `summaryHook()` / `contextHook()`：分别演示日志、输出检查、结束统计和用户输入前处理。
+回调链的短路约定很统一：`triggerHooks` 遇到第一个 `!= null` 的返回值就会立刻停止后续回调并返回它。返回值怎么用取决于触发点：`PreToolUse` 用它拦截工具，`Stop` 用它追加一条 `user` 消息续跑一轮。`UserPromptSubmit` 和 `PostToolUse` 则只触发副作用，丢弃返回值。
 
 ---
 
-hook 系统只有三样东西。`hooks` 是一张表，四个事件名各对应一个回调数组。`registerHook` 往某个事件里加一个回调。`triggerHooks` 按顺序执行某个事件的所有回调，只要有一个返回了非空值，就立刻停下并把这个值交回去，后面会用它来拦截工具。系统提示词改回 s02 的写法，因为权限说明不再靠提示词。这一步还没有任何地方调用它们，程序行为不变。
+整个 Hook 机制只有三样东西：`hooks` 表存四个事件对应的回调数组，`registerHook` 负责登记，`triggerHooks` 按顺序执行回调。只要某个回调返回非空值，`triggerHooks` 就立刻短路并返回它。顺手把 `SYSTEM` 改回 `s02`，因为权限约束不再靠提示词强调。
 
 本次代码变化：16 行。
 
@@ -1869,7 +1791,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-s03 的 `checkPermission` 返回 allow / deny / ask，再由 loop 决定怎么处理。现在把整件事装进 `permissionHook`：不是 bash 就放行；命中黑名单返回一句拒绝的话；命中风险名单就问用户，不同意也返回一句拒绝的话；其他情况返回 `null`。约定很简单：返回字符串表示拦截，返回 `null` 表示不管。写好后用 `registerHook` 挂到 `PreToolUse` 上。旧的 `checkPermission` 暂时还留着，loop 也还在用它。
+把 `s03` 的权限判定和用户确认收进 `permissionHook`：不是 `bash` 或安全命令返回 `null` 放行，命中黑名单或用户拒绝就直接返回拒绝文案。写好后注册到 `PreToolUse` 并导出方便测试；旧的 `checkPermission` 暂时留着，保证这一帧照常可运行。
 
 本次代码变化：15 行。
 
@@ -2023,7 +1945,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-现在让 loop 用上 hook。执行工具前调用 `triggerHooks("PreToolUse", ...)`，如果有 hook 返回了内容，就把它当作工具结果交还给模型，不再执行工具。原来写在 loop 里的三种权限分支缩成一个 `if`，`checkPermission` 和 `approved` 也可以整个删掉了。loop 从此不知道“权限”这个词，它只知道“执行前问一下 hook”。
+把 `agentLoop` 里写死的权限判断换成一行 `triggerHooks("PreToolUse", name, args, confirm)`：拿到非空结果就直接回灌给模型，不再调工具。旧的 `checkPermission` 和 `approved` 可以一起删掉，主循环从此不知道“权限”细节，只管在执行前问一次 Hook。
 
 本次代码变化：30 行。
 
@@ -2163,7 +2085,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-同一个事件可以挂多个 hook。`logHook` 也挂在 `PreToolUse` 上，它只打印工具名，然后返回 `null`，所以不会拦截任何调用。原来 loop 里那行打印工具输出的日志可以删掉了：记录这件事从 loop 搬到了 hook 里。注意顺序：`permissionHook` 先登记，所以被拦截的调用不会走到 `logHook`。
+同一个事件可以按顺序挂多个 Hook。我们把 `logHook` 也挂到 `PreToolUse` 上，同时删掉循环里原来的 `console.log`。注意注册顺序：`permissionHook` 排在前面，所以被拦下的危险调用会直接短路，不会走到 `logHook`。
 
 本次代码变化：7 行。
 
@@ -2304,7 +2226,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-第二个生命周期点在工具执行完之后。loop 里只加一行 `triggerHooks("PostToolUse", name, output)`。挂在上面的 `largeOutputHook` 检查输出长度，超过 10 万字符就打印一条提醒。它只观察不修改，返回 `null`。
+在工具执行完成后补上 `triggerHooks("PostToolUse", name, output)`。挂在上面的 `largeOutputHook` 只做观察，发现输出超过 10 万字符就打印一条提醒，随后返回 `null` 不改动结果。
 
 本次代码变化：9 行。
 
@@ -2456,7 +2378,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-第三个点在模型不再请求工具、loop 准备返回的时候。这里的约定稍有不同：Stop hook 如果返回了内容，loop 会把它作为一条新的 user 消息加进去，然后继续跑一轮，这就给了 hook “要求再检查一遍”的机会。本章挂的 `summaryHook` 只统计这一轮用了几次工具并打印，返回 `null`，所以 loop 正常结束。
+当模型不再请求工具、循环准备返回前触发 `Stop`。如果某个 `Stop` Hook 返回非 `null` 值，循环会把它转成新的 `user` 消息推回 `messages` 并 `continue` 再跑一轮。本章挂的 `summaryHook` 统计整个 `messages` 里累计的 `tool` 消息条数（含历史对话与拦截结果），打印后返回 `null`，让循环正常结束。
 
 本次代码变化：17 行。
 
@@ -2623,7 +2545,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后一个点在 loop 之外：用户按下回车后、进入 `agentLoop` 之前。所以它写在 `runChatCli` 的 `onPrompt` 里。`contextHook` 这里只打印当前目录，真实系统会在这个位置检查输入或补充上下文。四个事件都接好了：以后想加新行为，写一个函数、登记一行就够，不用再改 loop。
+最后一个节点在循环外面：用户回车后、进入 `agentLoop` 前，写在 `runChatCli` 的 `onPrompt` 里。挂上 `contextHook` 打印当前目录并把提示符改成 `"s04 >> "`，四个生命周期点全部打通。
 
 本次代码变化：13 行。
 
@@ -2633,17 +2555,19 @@ if (isMainModule(import.meta.url)) {
 尝试删除 notes.txt，然后告诉我这次操作有没有被拦截。
 ```
 
-观察重点：拦截逻辑应该来自 `PreToolUse` hook，工具执行后还会经过 `PostToolUse` hook。
+输入后终端会先打印 `[hook] UserPromptSubmit`。当模型调用 `bash` 执行删除命令时，会触发 `PreToolUse` 的权限确认提示，结束前再打印 `[hook] Stop` 统计，权限拦截已经来自注册上去的 Hook，而不是主循环里的硬编码分支。
 
 ### 扩展阅读：商业级 Agent 怎么做 Hook
 
-Hook 的价值是让系统围绕主循环生长，而不是把主循环改成一坨判断：
+Hook 机制让商业 Agent 能围绕稳定的主循环持续长出新能力：
 
-- Claude Code：公开 hooks 里有 `PreToolUse`、`PostToolUse`、`Stop`、`PreCompact`、`PostCompact` 等生命周期点。权限、日志、压缩前后处理都可以挂在事件上。
-- Codex：更偏把可拦截点放在执行策略、审批、沙箱和工具事件周围；核心思想一样：动作进入系统前后要能被策略层接管。
-- opencode：Plugin Hooks 是工具运行时的一部分，应用工具和插件可以接入 session runner，而不是改 runner 本体。
+- **Claude Code**：内置 `PreToolUse`、`PostToolUse`、`Stop`、`PreCompact` 等事件，权限、审计和压缩前后处理都挂在上面。
+- **Codex**：把可拦截点放在执行策略、审批、沙箱与工具事件周围，让动作前后都能被策略层接管。
+- **opencode**：用 Plugin Hooks 接入 session runner，工具和插件按事件扩展，无需改动核心循环本体。
 
-本章把权限门搬进 `PreToolUse`，就是商业 agent 的基本设计方向：核心 loop 保持稳定，扩展点挂在生命周期上。
+**主循环只管在关键节点发出信号，具体规矩交给外部注册的回调，系统才能越长越稳。**
+
+> **本章思考题**：工具、权限、Hook 都稳住了，但如果你一次交给它五六个连贯步骤，模型常常做到第三步就忘了开头、漏掉收尾。怎么让 Agent 在动手前先列出一份可见清单，边干活边打勾？下一章 `s05` 我们加上 `todo_write`。
 
 ```js ! agent.js range=93:163
 import {
@@ -2814,78 +2738,38 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s05：待办写入
-新人接到复杂任务时，最怕脑子里一团线：先做什么、做到哪了、还有什么没做都不清楚。`s05` 教他先写备忘录，把任务拆成可见的 todo，这样执行时不容易跑偏。
+## !!steps s05：Todo Write - 先列可见计划，让长任务稳住主线
+前四章搭好了工具、权限和 Hook 骨架，但遇到包含五六个步骤的复杂任务，模型还是容易做到一半忘了开头，要么漏掉步骤，要么提前宣布完工。
 
-### 本章目标
+这一章我们给它配上一块随时可见的会话内白板：**用 `todo_write` 把计划写进上下文，再加一个小计数器，连续几轮不更新就轻轻催它一下。**
 
-让 agent 在多步骤任务开始前，先把计划写出来。
+### 问题
 
-这一章只新增一个能力：`todo_write`。它不执行外部动作，只把当前任务拆成可见列表，避免模型做着做着忘记主线。
+前四章搭好了工具、权限和 Hook 骨架，但只要任务拉长到五六个步骤，模型就会在反复读文件、跑命令之后忘了开头定好的目标，不是漏掉某一步，就是干到一半提前宣布完工。仅靠纯对话上下文“记在心里”，长任务很难稳住主线。
 
-### 新增能力
+### 解决方案
 
-上一章已经有了 hook 和权限门。`s05` 在此基础上加了两件小东西：
-
-- `todo_write`：模型用它写入当前计划。
-- `roundsSinceTodo`：如果模型太久不更新计划，就往上下文里塞一条提醒。
-
-这里不需要 `normalizeTodos` 这类详细校验。工具 schema 已经告诉模型 todo 的形状，教程重点是“计划如何进入 agent loop”，不是把输入校验系统做完整。
-
-### 参考实现提醒
-
-TodoWrite 容易被误解成“任务系统”，但这一章还不是：
-
-- `todo_write` 只维护当前会话里的可见计划，不负责跨会话持久化。
-- todo 的状态变化是给模型和用户看的工作记忆，不等于文件已经真的改完。
-- `<reminder>` 只是注入给模型看的提醒标签，没有 HTML 语义，也不会被浏览器解析。
-
-### 新增函数速览
-
-- `getTodos()`：读取当前内存里的 todo 列表，方便测试和观察 agent 的计划状态。
-- `runTodoWrite({ todos })`：`todo_write` 的实际处理函数，把模型给出的 todo 列表保存到 `currentTodos`。
-- `agentLoop(messages, confirm)`：在 s04 的 hook loop 基础上，增加 todo 更新计数和 `<reminder>` 提醒。
-
-### 流程图
+在保留 `s04` 权限 Hook 的基础上，我们只补两件小东西：第一件是内存工具 `todo_write`，把任务清单（`pending` / `in_progress` / `completed`）写进当前会话。第二件是 `roundsSinceTodo` 计数器：每收到一条带 `tool_calls` 的模型回复加 1（同一回复并发多个工具也只算 1 轮），调用 `todo_write` 时清零；连续 3 轮没更新，就在下一次请求前往 `messages` 注入一条提醒：
 
 ```mermaid
 flowchart TD
-  M["messages"] --> L["LLM"]
-  L --> Q{"有 tool_calls 吗？"}
+  U["用户输入"] --> M["messages"]
+  M --> CHK{"roundsSinceTodo >= 3？"}
+  CHK -->|是| REM["注入 Update your todos 提醒<br/>计数器清零"] --> L["LLM"]
+  CHK -->|否| L
+  L --> Q{"有 tool_calls？"}
   Q -->|没有| R["返回结果"]
-  Q -->|有| PRE["triggerHooks PreToolUse"]
-  PRE --> H["handlers<br/>bash · read · write · edit · glob"]
-  PRE --> TD2["todo_write<br/>更新进程内 TODO 列表"]
-  H -->|结果追加到 messages| M
-  TD2 -->|结果追加到 messages| M
-  NAG["催更提醒<br/>连续 3 轮没更新 todo → 注入 Update your todos."] -.-> M
+  Q -->|有| CNT["回复轮次 +1<br/>进入 PreToolUse 检查"]
+  CNT -->|被拦截| M
+  CNT -->|放行| H["handlers 分发<br/>bash · read · ... · todo_write"]
+  H -->|调了 todo_write 清零| M
 ```
-```text
-用户输入
-  |
-  v
-agent loop
-  |
-  +--> 太久没更新 todo?
-  |        |
-  |        +--> 注入提醒: <reminder>Update your todos.</reminder>
-  |
-  v
-LLM 决定下一步
-  |
-  +--> 调用 todo_write
-  |        |
-  |        +--> 写入 currentTodos
-  |        +--> roundsSinceTodo = 0
-  |
-  +--> 每个包含工具调用的模型回合
-           |
-           +--> roundsSinceTodo + 1
-```
+
+注入的 `<reminder>` 只是给模型看的纯文本标签，没有 HTML 语义；看到提醒后怎么更新计划，依然由模型自己决定。一两步的小活没必要写清单，超过三四步的长任务才值得维护这份会话内白板，跨会话的持久化任务系统留到后面 `s12` 再做。
 
 ---
 
-s04 为了讲清四个生命周期事件，挂了四个只打印日志的 hook。它们已经完成任务，从这一章起不再需要，先删掉，让代码短一些。负责权限的 `permissionHook` 保留，hook 的登记和触发机制也保留。
+`s04` 为了展示四个生命周期事件，挂了四个只打印日志的演示 Hook。从本章起先把它们收起来让代码保持清爽；这一步删掉后终端不再刷 `[hook]` 日志，但 `permissionHook` 照常拦截危险命令。
 
 本次代码变化：27 行。
 
@@ -3030,7 +2914,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-演示 hook 删掉以后，`PostToolUse`、`Stop`、`UserPromptSubmit` 这三个事件上已经没有回调，loop 里对应的触发代码也一起拿掉，只留下执行工具前的 `PreToolUse`（权限就靠它）。现在的程序相当于“s02 的工具 + 权限 hook”，这是本章的起点。
+演示 Hook 拿掉后，`PostToolUse`、`Stop`、`UserPromptSubmit` 上暂时没有回调，把这三处触发调用和多余导出一起清掉，只保留工具执行前的 `PreToolUse`。整理完后代码回到干净的权限骨架，下一帧把 `todo_write` 接进来。
 
 本次代码变化：9 行。
 
@@ -3172,163 +3056,11 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-先写计划放在哪里。`currentTodos` 是一个数组，保存当前的任务清单；`getTodos` 让测试能读到它。`runTodoWrite` 是工具的实现：用模型传来的清单整个替换旧清单，然后打印成一眼能看懂的列表，`▸` 表示进行中，`✓` 表示已完成。注意它不做任何实际工作，只记录和显示。最后在 `handlers` 里登记一行。模型现在还不知道这个工具，下一步再告诉它。
+把 `todo_write` 的实现、schema 和分发注册放进同一帧，让这一步就能直接运行。我们用内存数组 `currentTodos` 存清单（`getTodos()` 留给测试读取），`runTodoWrite` 负责整份替换旧清单并按状态打印空格、`▸` 和 `✓`。接着在 `tools` 里声明 `content` 与三选一 `status` 的 schema、在 `handlers` 里挂上 `runTodoWrite`，再改写 `SYSTEM` 引导模型先列计划再动手。
 
-本次代码变化：14 行。
+本次代码变化：33 行。
 
-```js ! agent.js range=39:78
-import {
-  callLlm,
-  runBash,
-  readFile,
-  writeFile,
-  editFile,
-  glob,
-  tool,
-  runChatCli,
-  isMainModule,
-} from "./helper.js";
-
-const SYSTEM = `You are a coding agent at ${process.cwd()}. Use tools to solve tasks. Act, don't explain.`;
-
-const tools = [
-  tool("bash", "Run a shell command.", {
-    type: "object",
-    properties: { command: { type: "string" } },
-    required: ["command"],
-  }),
-  tool("read_file", "Read a file (optional line limit).", {
-    type: "object",
-    properties: { path: { type: "string" }, limit: { type: "integer" } },
-    required: ["path"],
-  }),
-  tool("write_file", "Write content to a file.", {
-    type: "object",
-    properties: { path: { type: "string" }, content: { type: "string" } },
-    required: ["path", "content"],
-  }),
-  tool("edit_file", "Replace exact text in a file once.", {
-    type: "object",
-    properties: {
-      path: { type: "string" },
-      old_text: { type: "string" },
-      new_text: { type: "string" },
-    },
-    required: ["path", "old_text", "new_text"],
-  }),
-  tool("glob", "Find files by glob pattern.", {
-    type: "object",
-    properties: { pattern: { type: "string" } },
-    required: ["pattern"],
-  }),
-];
-
-// !focus(start)
-let currentTodos = [];
-export function getTodos() {
-  return currentTodos;
-}
-
-function runTodoWrite({ todos = [] }) {
-  currentTodos = todos;
-  const icon = { pending: " ", in_progress: "▸", completed: "✓" };
-  console.log("## Current Tasks");
-  for (const t of currentTodos) console.log(`  [${icon[t.status]}] ${t.content}`);
-  return `Updated ${currentTodos.length} tasks`;
-}
-
-// !focus(end)
-const handlers = {
-  bash: ({ command }) => runBash(command),
-  read_file: ({ path, limit }) => readFile(path, limit),
-  write_file: ({ path, content }) => writeFile(path, content),
-  edit_file: ({ path, old_text, new_text }) => editFile(path, old_text, new_text),
-  glob: ({ pattern }) => glob(pattern),
-// !focus(start)
-  todo_write: runTodoWrite,
-// !focus(end)
-};
-
-const hooks = { UserPromptSubmit: [], PreToolUse: [], PostToolUse: [], Stop: [] };
-
-function registerHook(event, callback) {
-  hooks[event].push(callback);
-}
-
-async function triggerHooks(event, ...args) {
-  for (const callback of hooks[event]) {
-    const result = await callback(...args);
-    if (result != null) return result;
-  }
-  return null;
-}
-
-const DENY = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="];
-const RISKY = ["rm ", "> /etc/", "chmod 777"];
-
-async function permissionHook(name, args, confirm) {
-  if (name !== "bash") return null;
-  const command = args.command || "";
-  if (DENY.some((p) => command.includes(p))) return "Permission denied: 命中黑名单。";
-  if (RISKY.some((p) => command.includes(p))) {
-    const answer = confirm ? await confirm(`⚠ 可能有破坏性的命令: ${command} 允许? [y/N] `) : "";
-    if (!/^y(es)?$/i.test(String(answer).trim())) return "Permission denied by user.";
-  }
-  return null;
-}
-
-registerHook("PreToolUse", permissionHook);
-
-export async function agentLoop(messages, confirm) {
-  while (true) {
-    const { message } = await callLlm(messages, { system: SYSTEM, tools });
-
-    if (!message.tool_calls?.length) {
-      return message.content || "";
-    }
-
-    messages.push(message);
-    for (const call of message.tool_calls) {
-      const name = call.function.name;
-      const args = JSON.parse(call.function.arguments || "{}");
-
-      const blocked = await triggerHooks("PreToolUse", name, args, confirm);
-      let output;
-      if (blocked != null) {
-        output = String(blocked);
-      } else {
-        const handler = handlers[name];
-        output = handler ? handler(args) : `Unknown tool: ${name}`;
-      }
-
-      messages.push({ role: "tool", tool_call_id: call.id, content: String(output) });
-    }
-  }
-}
-
-async function main() {
-  await runChatCli({
-    promptLabel: "s04 >> ",
-    onPrompt: async ({ prompt, messages, ask }) => {
-      return agentLoop(messages, ask);
-    },
-  });
-}
-
-if (isMainModule(import.meta.url)) {
-  main().catch((error) => {
-    console.error(error.message);
-    process.exit(1);
-  });
-}
-```
-
-## !!steps
-给 `tools` 加上 `todo_write` 的 schema。参数是一个 `todos` 数组，每一项有内容 `content` 和状态 `status`，状态只能是 `pending`、`in_progress`、`completed` 三种之一。系统提示词也加一句：多步任务先用 `todo_write` 做计划，边做边更新状态。到这一步，模型已经会在动手前先列计划。
-
-本次代码变化：19 行。
-
-```js ! agent.js range=5:72
+```js ! agent.js range=5:99
 import {
   callLlm,
   runBash,
@@ -3396,6 +3128,7 @@ const tools = [
   }),
 ];
 
+// !focus(start)
 let currentTodos = [];
 export function getTodos() {
   return currentTodos;
@@ -3409,13 +3142,16 @@ function runTodoWrite({ todos = [] }) {
   return `Updated ${currentTodos.length} tasks`;
 }
 
+// !focus(end)
 const handlers = {
   bash: ({ command }) => runBash(command),
   read_file: ({ path, limit }) => readFile(path, limit),
   write_file: ({ path, content }) => writeFile(path, content),
   edit_file: ({ path, old_text, new_text }) => editFile(path, old_text, new_text),
   glob: ({ pattern }) => glob(pattern),
+// !focus(start)
   todo_write: runTodoWrite,
+// !focus(end)
 };
 
 const hooks = { UserPromptSubmit: [], PreToolUse: [], PostToolUse: [], Stop: [] };
@@ -3493,7 +3229,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-模型做着做着常会忘记回头更新计划。在 loop 里加一个计数器 `roundsSinceTodo`：每调用一轮模型加 1，只要这一轮用了 `todo_write` 就清零。连续 3 轮没更新，就往 `messages` 里加一条提醒，把它的注意力拉回来。提醒也只是一条普通消息，写不写计划仍然由模型决定。
+模型干起活来常会忘记回头改清单。我们在 `agentLoop` 里加一个 `roundsSinceTodo`：每收到一条带 `tool_calls` 的模型回复加 1（同一回复并发多个工具也只算 1 轮），只要其中调用了 `todo_write` 就清零。连续 3 轮回复没更新（哪怕一共调了 6 次工具），就在下一次请求前往 `messages` 推一条 `<reminder>Update your todos.</reminder>`。最后顺手把提示符改成 `"s05 >> "`。
 
 本次代码变化：10 行。
 
@@ -3503,17 +3239,19 @@ if (isMainModule(import.meta.url)) {
 用 todo_write 规划：创建、读取、更新 notes.txt；创建含三条⬜任务的 notes.txt，读取后把文件和 todo 都改成全部✅。
 ```
 
-观察重点：模型应该先调用 `todo_write` 写计划，再穿插文件工具，最后同时更新文件内容和 todo 状态。
+当模型按指令先调 `todo_write` 再操作文件时，你会看到终端先打印任务清单，再穿插读写 `notes.txt`，最后把文件内容和 todo 状态一起更新为完成。
 
 ### 扩展阅读：商业级 Agent 怎么做会话内计划
 
-`todo_write` 不是持久任务系统，它更像“当前会话的工作记忆”：
+`todo_write` 本质上是当前会话的可见工作记忆，商业级产品也都把它和长期任务库区分开：
 
-- Claude Code：交互会话已使用 `TaskCreate` / `TaskUpdate` / `TaskList` 等结构化工具；`TodoWrite` 仍可用于 Agent SDK 和非交互模式。两者都让状态从 `pending` 逐步变为 `in_progress` 和 `completed`。参考 [Claude Code Todo Lists](https://code.claude.com/docs/en/agent-sdk/todo-tracking)。
-- Codex：`update_plan` 维护当前任务的步骤和状态，与本章一样属于执行期检查清单，不是长期任务库。参考 [Codex 默认指令中的 `update_plan`](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/prompts/base_instructions/default.md)。
-- opencode：内置 `todowrite` 用于复杂操作的会话内进度跟踪，而且默认不对子代理开放。参考 [OpenCode Tools](https://opencode.ai/docs/tools/)。
+- **Claude Code**：交互会话使用结构化任务工具，Agent SDK 中保留 `TodoWrite`，同样让状态按 `pending` → `in_progress` → `completed` 推进。参考 [Claude Code Todo Lists](https://code.claude.com/docs/en/agent-sdk/todo-tracking)。
+- **Codex**：通过 `update_plan` 维护当前任务的步骤与进度，定位同样是执行期检查清单。参考 [Codex `update_plan` 指令](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/prompts/base_instructions/default.md)。
+- **opencode**：同样把会话内任务清单和持久化任务区分开，用来跟踪当前复杂会话的步骤进度。参考 [OpenCode Docs](https://opencode.ai/docs/)。
 
-所以本章要守住边界：todo 解决“这一轮怎么做”，后面的 task system 才解决“跨轮次、跨队友怎么协作”。
+**`todo_write` 的价值不在清单本身，而在让计划进入上下文循环，帮模型每轮都稳住主线。**
+
+> **本章思考题**：先预测一下：如果模型第 1 轮读文件、第 2 轮调了 `todo_write`、第 3 和第 4 轮继续查文件，第 5 次请求前会触发提醒吗？另外，如果其中一步要翻十几个文件做调研，所有读取输出都塞进主 `messages` 很快会撑爆上下文。能不能临时派一个助理去独立上下文里调研，最后只带回一段摘要？下一章 `s06` 我们来做 Subagent。
 
 ```js ! agent.js range=109:171
 import {
@@ -3693,83 +3431,42 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s06：Subagent —— 把探索放进干净上下文
-新人遇到一堆资料要查时，如果所有草稿、试错和中间结论都塞进主汇报里，领导很快看不清主线。`s06` 像是让他临时拉一个助理去单独调研，最后只把摘要带回来。
+## !!steps s06：Subagent - 把探索放进干净上下文，只把摘要带回来
+上一章 `s05` 学会了列计划，但一旦遇到“把目录里十几个文件都查一遍”的调研任务，大量文件读取和搜索输出会瞬间塞满主 `messages`，把主线冲淡。
 
-### 本章目标
+这一章我们给 Agent 加一把 `task` 工具，专门承接这类调研。**Subagent 的核心不是“多一个人”，而是把子代理的中间输出留在它自己的 `messages[]` 里，主对话只收最终摘要。**
 
-前面几章里，主 agent 既要负责主任务，又要负责探索细节。探索一多，主对话就会变乱。
+### 问题
 
-`s06` 加入一个 `task` 工具：主 agent 把一段子任务交给 subagent，subagent 用自己的 `messages[]` 跑完，只把最终摘要交回主对话。
+主 Agent 既要盯着最终目标，又要亲自翻文件、跑搜索、做试错。所有探索细节都堆在同一份 `messages` 里，主上下文很快膨胀，既浪费 Token，又容易让模型分心。
 
-### 新增能力
+### 解决方案
 
-本章不是替换 s05 的计划能力，而是在保留 `todo_write` 的基础上，新增子代理。
-
-- `task`：启动一次性 subagent。
-- subagent 有独立上下文。
-- subagent 可以使用基础工具。
-- 父 agent 只收到最终摘要，不收中间过程。
-
-### 为什么这一步重要
-
-subagent 的重点不是“多一个人”，而是“隔离上下文”。
-
-主 agent 不需要把所有搜索、试错、读文件细节都背在当前对话里。它只需要拿到一句可靠结论，然后继续推进主目标。
-
-### 参考实现提醒
-
-Subagent 的关键不是“再开一个函数”，而是上下文隔离：
-
-- 子 agent 用新的 `messages[]` 开始，父 agent 不继承它的中间推理和工具流水。
-- 父 agent 只拿最终摘要，避免主上下文被探索过程污染。
-- 教程版通常禁止子 agent 再继续创建子 agent，防止递归失控。
-
-### 新增函数速览
-
-- `spawnSubagent(description, confirm)`：用一份新的 `messages[]` 启动子代理，让探索性任务在干净上下文里运行。
-- `agentLoop(messages, confirm)`：在 s05 基础上支持异步 handler，所以 `task` 工具可以等待子代理完成后再回灌摘要。
-
-### 流程图
+我们把子代理做成一个普通的 `task` 工具，背后调用 `spawnSubagent(description, confirm)`，让它在只含一条 `user` 任务描述的新 `messages` 里跑完循环，返回时丢弃所有中间流水，只交回最后一段文本或兜底提示：
 
 ```mermaid
 flowchart TD
   subgraph PARENT["父 Agent"]
-    PM["messages"] --> PL["LLM"]
-    PL --> PH["handlers<br/>bash · read · write ..."]
-    PH -->|普通工具结果| PM
-    PL --> TASK["task 工具"]
+    PM["父 messages"] --> PL["LLM"]
+    PL --> PH["常规 handlers<br/>bash · read · write ..."]
+    PH --> PM
+    PL --> TASK["await task(description)"]
   end
-  subgraph SUB["子 Agent：全新上下文"]
-    SM["messages = [description]<br/>不继承父对话历史"] --> SL["LLM"]
-    SL -->|调工具，最多 30 轮| SH["subHandlers<br/>没有 task，不能再派子 Agent"]
+  subgraph SUB["子 Agent（独立上下文）"]
+    SM["全新 messages<br/>1 条 user 任务描述"] --> SL["LLM（最多 30 轮）"]
+    SL -->|调工具，过 PreToolUse| SH["subHandlers<br/>禁用 task · todo_write"]
     SH --> SM
-    SH -.-> DROP["中间的工具调用和结果在返回时丢弃"]
-    SL -->|完成| OUT["只取最后一段文本摘要"]
+    SL -->|完成或超 30 轮| OUT["最终文本 / 兜底提示<br/>返回后丢弃中间消息"]
   end
-  TASK -->|① 任务描述| SM
-  OUT -->|② 摘要作为 tool 结果| PM
+  TASK -->|① 传入描述| SM
+  OUT -->|② 作为 tool 结果回填| PM
 ```
-```text
-s06: Subagent — spawn sub-agents with fresh messages[] for context isolation.
 
-  Parent Agent                           Subagent
-  +------------------+                  +------------------+
-  | messages=[...]   |                  | messages=[task]  | <-- fresh
-  |                  |   dispatch       |                  |
-  | tool: task       | ---------------> | own while loop   |
-  |   prompt="..."   |                  |   bash/read/...  |
-  |                  |   summary only   |   (max 30 turns) |
-  | result = "..."   | <--------------- | return last text |
-  +------------------+                  +------------------+
-        ^                                      |
-        |       intermediate results DISCARDED  |
-        +--------------------------------------+
-```
+这里同时做好三项约束：子代理禁用 `task` 和 `todo_write` 防止无限套娃，最多发起 30 次模型调用兜底，工具执行依然要过 `PreToolUse` 权限门。父循环会 `await` 等子代理跑完再继续，双方仍共享当前工作目录和文件工具。平时顺手查一两个文件让主代理直接读就行，只有需要大范围翻文件时才值得拆出子上下文。
 
 ---
 
-子代理也是在调用同一个模型，区别只在于给它什么提示词、什么消息、什么工具。先准备提示词 `SUB_SYSTEM`：完成任务，返回一段简短的总结，不要再往下派任务。
+子代理调的依然是同一个模型，区别只在给它什么提示词、消息和工具。先加一条简短的 `SUB_SYSTEM`：专注完成手头子任务，返回精炼摘要，不要再往下派任务。这一步只是先备好常量，程序运行行为还没变，等第 5 帧接上 `task` 工具后才会启用。
 
 本次代码变化：1 行。
 
@@ -3945,7 +3642,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-子代理的工具是从父代理的工具里筛出来的，去掉两个：`task`（否则子代理还能再派子代理，没完没了）和 `todo_write`（一个小任务不需要再列计划）。`subTools` 是给模型看的 schema，`subHandlers` 是对应的执行函数，两边用同一份排除名单，保证一致。`MAX_SUB_TURNS` 限制子代理最多跑 30 轮，防止它停不下来。
+从父代理的 `tools` 和 `handlers` 里筛出子代理可用的子集，用同一份 `SUB_EXCLUDE` 剔除 `task`（防无限递归）和 `todo_write`（小任务不必另列计划），保证两张表严格一致。再设 `MAX_SUB_TURNS = 30` 限制子代理最多发起 30 次模型调用。这一步仍在准备配置，下一帧才写出子循环。
 
 本次代码变化：7 行。
 
@@ -4128,7 +3825,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`spawnSubagent` 的第一行就是本章的核心：`messages` 是一个新数组，里面只有一条任务描述。父代理之前聊过什么，子代理完全看不到。接着是一个熟悉的循环：调用模型，模型不再请求工具时，把它最后说的那段话作为返回值。函数返回后，这个 `messages` 数组就被丢掉，中间过程不会进入父代理的上下文。这一步先搭骨架，执行工具的部分下一步补。
+`spawnSubagent` 第一行就是本章核心：`messages` 是全新数组，只装一条 `{ role: "user", content: description }`，完全不继承父对话历史。模型不再调工具时返回最终文本（空文本或超 30 轮各有兜底提示），函数一结束局部 `messages` 就随作用域丢弃。这一帧先立起循环外壳，下一帧补齐工具执行与回填后才能跑通工具闭环。
 
 本次代码变化：12 行。
 
@@ -4325,7 +4022,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-补上子循环里执行工具的部分，写法和主循环一样：解析参数、查 `subHandlers`、把结果用 `tool_call_id` 放回 `messages`。要注意的是，执行前同样触发 `PreToolUse`。上下文是隔离的，但权限不是：子代理想执行危险命令，一样会被拦截或者问用户。
+补齐子循环里的工具执行逻辑：解析参数、查 `subHandlers`、用 `tool_call_id` 把结果塞回子代理自己的 `messages`。特别注意：上下文是隔离的，但权限不是，子代理调工具前同样要触发 `PreToolUse`，危险命令照样拦截或问用户。
 
 本次代码变化：10 行。
 
@@ -4530,7 +4227,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后把子代理接到父代理上。`tools` 里加上 `task` 的 schema，参数只有一个 `description`；`handlers` 里加一行，调用 `spawnSubagent`。因为子代理是异步的，而且可能要问用户，主循环调用工具时改成 `await handler(args, confirm)`。系统提示词补一句：复杂的子问题可以用 `task` 派给子代理。现在父代理派出任务后，只会收到一段总结。
+最后把子代理挂进父代理：`tools` 增加 `task` 的 schema，`handlers` 指向 `spawnSubagent`，并更新 `SYSTEM` 告知模型遇到复杂子问题可以派子代理。因为 `spawnSubagent` 是异步的且可能需要用户确认，主循环执行工具改为 `await handler(args, confirm)`，提示符切到 `"s06 >> "`。
 
 本次代码变化：12 行。
 
@@ -4540,17 +4237,19 @@ if (isMainModule(import.meta.url)) {
 派一个子代理检查当前目录有哪些 Markdown 文件，主代理只需要返回子代理的总结。
 ```
 
-观察重点：主代理应该调用 `task`，探索过程留在子代理上下文里，主对话只拿到最终摘要。
+当模型按要求调用 `task` 委派调研时，所有查目录的中间工具输出都留在子代理内部，主对话只拿到一段最终总结。
 
 ### 扩展阅读：商业级 Agent 怎么做子代理
 
-子代理的关键不是“多调一次模型”，而是给子任务一个独立上下文和清晰返回边界：
+商业级产品的子代理形态各异，但核心同样是独立上下文和清晰的返回边界：
 
-- Claude Code：普通 subagent 使用独立上下文，完成后只把结果返回主对话；子代理还可以单独限制工具。参考 [Claude Code Subagents](https://code.claude.com/docs/en/sub-agents)。
-- Codex：开源实现使用 `spawn_agent` / `wait_agent` / `close_agent` 管理子线程生命周期，比本章的一次性函数多了状态和回收。参考 [Codex agent tool 源码](https://github.com/openai/codex/blob/main/codex-rs/tools/src/agent_tool.rs)。
-- opencode：自定义 agent 可以标记为 `subagent`，并通过 `task` 工具调用，同时能为它单独设置权限。参考 [OpenCode Agents](https://opencode.ai/docs/agents/)。
+- **Claude Code**：普通 subagent 拥有独立上下文，可单独限制可用工具，完成后只把最终结果返回主对话。参考 [Claude Code Subagents](https://code.claude.com/docs/en/sub-agents)。
+- **Codex**：通过 `spawn_agent`、`wait_agent` 等工具管理子线程的创建、等待与回收，比一次性函数多了完整的生命周期控制。参考 [OpenAI Codex](https://github.com/openai/codex)。
+- **opencode**：支持将自定义 agent 配置为 `subagent` 模式供主代理委派，还能单独配置工具与权限。参考 [OpenCode Agents](https://opencode.ai/docs/agents/)。
 
-本章的 `spawnSubagent()` 是最小实现：新建 `messages[]`，跑自己的 loop，只把最终摘要还给父 agent。
+**新建一份干净的 `messages[]`，跑完只交回摘要，就是 Subagent 最本质的抽象。**
+
+> **本章思考题**：先确认一下权限边界：如果让子代理执行 `rm notes.txt`，终端还会弹出 `[y/N]` 确认吗？（回头看第 4 帧的 `PreToolUse` 就知道答案。）另外，项目里还有代码规范、发布流程、排障手册等专业文档，全塞进 `SYSTEM` 每轮都在烧 Token。能不能只在提示词里放目录，模型需要时再按需加载全文？下一章 `s07` 我们来做 Skill Loading。
 
 ```js ! agent.js range=5:207
 import {

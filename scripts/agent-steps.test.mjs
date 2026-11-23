@@ -182,19 +182,39 @@ test("s00 builds from an empty source in four verified steps", async () => {
   assert.equal(snapshots.at(-1).code, target)
 })
 
-test("the course generator emits focus-aware s01 CodeHike steps", async () => {
-  const root = fileURLToPath(new URL("../", import.meta.url))
-  execFileSync(process.execPath, [
-    fileURLToPath(new URL("./generate-build-your-agent-content.mjs", import.meta.url)),
-  ], { cwd: root })
+const EXPECTED_STEPS = {
+  s02: 5, s03: 5, s04: 7, s05: 4, s06: 5, s07: 5, s08: 9, s09: 13,
+  s10: 7, s11: 8, s12: 6, s13: 8, s14: 10, s15: 9, s16: 9, s17: 8,
+}
 
+let generatedContentPromise
+
+function loadGeneratedContent() {
+  if (!generatedContentPromise) {
+    const root = fileURLToPath(new URL("../", import.meta.url))
+    execFileSync(process.execPath, [
+      fileURLToPath(new URL("./generate-build-your-agent-content.mjs", import.meta.url)),
+    ], { cwd: root })
+    generatedContentPromise = readFile(
+      new URL("../app/build-your-agent/content.generated.cn.mdx", import.meta.url),
+      "utf8",
+    )
+  }
+  return generatedContentPromise
+}
+
+function extractChapterSection(content, prefix, nextPrefix) {
+  return content.match(
+    new RegExp(`## !!steps ${prefix}：[\\s\\S]*?(?=\\n## !!steps ${nextPrefix}：)`),
+  )?.[0] || ""
+}
+
+test("the course generator emits focus-aware s01 CodeHike steps", async () => {
   const [content, target] = await Promise.all([
-    readFile(new URL("../app/build-your-agent/content.generated.cn.mdx", import.meta.url), "utf8"),
+    loadGeneratedContent(),
     readFile(new URL("../code-agent-course/s01-agent-loop.js", import.meta.url), "utf8"),
   ])
-  const section = content.match(
-    /## !!steps s01：[\s\S]*?(?=\n## !!steps s02：)/,
-  )?.[0] || ""
+  const section = extractChapterSection(content, "s01", "s02")
   const headings = section.match(/^## !!steps(?:\s|$)/gm) || []
   const titledHeadings = section.match(/^## !!steps \S+/gm) || []
   const snapshots = [...section.matchAll(
@@ -204,7 +224,6 @@ test("the course generator emits focus-aware s01 CodeHike steps", async () => {
   assert.equal(headings.length, 6)
   assert.equal(titledHeadings.length, 1)
   assert.equal(snapshots.length, 6)
-  assert.doesNotMatch(content, /^## !!steps s\d\d\.\d+/m)
   for (const snapshot of snapshots) {
     const start = Number(snapshot[1])
     const end = Number(snapshot[2])
@@ -223,39 +242,29 @@ test("the course generator emits focus-aware s01 CodeHike steps", async () => {
     .replace(/^\/\/ !focus\((?:start|end)\)\n?/gm, "")
     .trimEnd()
   assert.equal(finalCode, target.trimEnd())
+  assert.match(section, /### 扩展阅读：商业级 Agent 怎么做主循环/)
 
+  const s01LastStep = section.split(/^## !!steps(?:\s|$)/m).at(-1) || ""
+  assert.match(s01LastStep, /### 测试 Prompt/)
+})
+
+test("the course generator emits expected step counts and safe focus markers", async () => {
+  const content = await loadGeneratedContent()
+  assert.doesNotMatch(content, /^## !!steps s\d\d\.\d+/m)
   assert.doesNotMatch(content, /range=1:220/)
 
-  const s05Section = content.match(
-    /## !!steps s05：[\s\S]*?(?=\n## !!steps s06：)/,
-  )?.[0] || ""
-  assert.match(s05Section, /### 本章目标/)
-  assert.match(s05Section, /### 新增能力/)
-  assert.match(s05Section, /### 流程图/)
-  assert.match(s05Section, /### 测试 Prompt/)
-  assert.match(s05Section, /```text[\s\S]*todo_write/)
-
-  const s00Section = content.match(
-    /## !!steps s00：[\s\S]*?(?=\n## !!steps s01：)/,
-  )?.[0] || ""
-  const s00Headings = s00Section.match(/^## !!steps(?:\s|$)/gm) || []
+  const s00Headings = extractChapterSection(content, "s00", "s01").match(/^## !!steps(?:\s|$)/gm) || []
   assert.equal(s00Headings.length, 4)
 
-  const expectedSteps = {
-    s02: 5, s03: 5, s04: 7, s05: 5, s06: 5, s07: 5, s08: 9, s09: 13,
-    s10: 7, s11: 8, s12: 6, s13: 8, s14: 10, s15: 9, s16: 9, s17: 8,
-  }
-  const prefixes = Object.keys(expectedSteps)
+  const prefixes = Object.keys(EXPECTED_STEPS)
   for (const [index, prefix] of prefixes.entries()) {
-    const nextPrefix = prefixes[index + 1] || "s18"
-    const chapterSection = content.match(
-      new RegExp(`## !!steps ${prefix}：[\\s\\S]*?(?=\\n## !!steps ${nextPrefix}：)`),
-    )?.[0] || ""
+    const chapterSection = extractChapterSection(content, prefix, prefixes[index + 1] || "s18")
     const chapterSteps = chapterSection.match(/^## !!steps(?:\s|$)/gm) || []
     const chapterTitles = chapterSection.match(/^## !!steps \S+/gm) || []
-    assert.equal(chapterSteps.length, expectedSteps[prefix], `${prefix} should have ${expectedSteps[prefix]} steps`)
+    assert.equal(chapterSteps.length, EXPECTED_STEPS[prefix], `${prefix} should have ${EXPECTED_STEPS[prefix]} steps`)
     assert.equal(chapterTitles.length, 1, `${prefix} should only emit a heading on its first step`)
   }
+
   // A focus marker is a comment, so it must never sit inside a multi-line template literal.
   for (const block of content.matchAll(/```js ! agent\.js range=[\d:]+\n([\s\S]*?)\n```/g)) {
     let insideTemplate = false
@@ -265,6 +274,7 @@ test("the course generator emits focus-aware s01 CodeHike steps", async () => {
       if (backticks % 2) insideTemplate = !insideTemplate
     }
   }
+
   const s18Steps = content.match(/^## !!steps s18(?:\.|：)/gm) || []
   assert.equal(s18Steps.length, 1, "s18 should remain a single step")
   assert.doesNotMatch(content, /^## !!steps s19/m)
@@ -273,17 +283,33 @@ test("the course generator emits focus-aware s01 CodeHike steps", async () => {
   assert.match(content, /右侧继续展示 `s17` 的完整 Agent/)
   assert.doesNotMatch(content, /s18-kv-cache\.md/)
 
+  const runtimeSteps = await getTutorialRuntimeSteps()
+  const totalExpectedSteps = 4 + 6 + Object.values(EXPECTED_STEPS).reduce((sum, count) => sum + count, 0) + 1
+  assert.equal(runtimeSteps.length, totalExpectedSteps)
+})
+
+test("the course generator emits intro sections, mermaid diagrams, and clean MDX", async () => {
+  const content = await loadGeneratedContent()
+  const s05Section = extractChapterSection(content, "s05", "s06")
+  assert.match(s05Section, /### 问题/)
+  assert.match(s05Section, /### 解决方案/)
+  assert.match(s05Section, /### 测试 Prompt/)
+  assert.match(s05Section, /```text[\s\S]*todo_write/)
+
   const mermaidBlocks = content.match(/^```mermaid$/gm) || []
-  assert.equal(mermaidBlocks.length, 26, "all 26 main-chapter diagrams should be emitted as mermaid blocks")
+  assert.equal(mermaidBlocks.length, 27, "all 27 main-chapter diagrams should be emitted as mermaid blocks")
+  for (const [prefix, nextPrefix] of [
+    ["s00", "s01"], ["s01", "s02"], ["s02", "s03"], ["s03", "s04"],
+    ["s04", "s05"], ["s05", "s06"], ["s06", "s07"],
+  ]) {
+    assert.match(
+      extractChapterSection(content, prefix, nextPrefix),
+      /^```mermaid$/m,
+      `${prefix} should include a mermaid diagram`,
+    )
+  }
+
   assert.doesNotMatch(content, /learn\.shareai\.run/)
   assert.doesNotMatch(content, /\+&lt;---/)
   assert.doesNotMatch(content, /`[^`\n]*&#123;/)
-  assert.match(section, /### 扩展阅读：商业级 Agent 怎么做主循环/)
-
-  const s01LastStep = section.split(/^## !!steps(?:\s|$)/m).at(-1) || ""
-  assert.match(s01LastStep, /### 测试 Prompt/)
-
-  const runtimeSteps = await getTutorialRuntimeSteps()
-  const totalExpectedSteps = 4 + 6 + Object.values(expectedSteps).reduce((sum, count) => sum + count, 0) + 1
-  assert.equal(runtimeSteps.length, totalExpectedSteps)
 })
