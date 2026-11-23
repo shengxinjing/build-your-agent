@@ -98,7 +98,7 @@ Every chapter with its own JS file (s00–s17) splits its code change into sever
 
 ### Articles
 
-Markdown is Chinese, friendly to beginners, in plain wording (prefer "write to a file" over vaguer terms). Recommended chapter structure for polished scrollytelling chapters (`s00`–`s06`, and subsequent rewrites):
+Markdown is Chinese, friendly to beginners, in plain wording (prefer "write to a file" over vaguer terms). Recommended chapter structure for polished scrollytelling chapters (`s00`–`s11`, and subsequent rewrites):
 
 1. Opening lead: what new ability this chapter adds and why it matters now.
 2. `## 问题`: the concrete pain point in plain terms.
@@ -109,7 +109,7 @@ Markdown is Chinese, friendly to beginners, in plain wording (prefer "write to a
 7. `## 博客代码演进`: incremental `### N. ...` frames with ` ```diff agent-step ` patches (replacing standalone `新增函数速览` / `关键代码` sections), ending the final frame with a `> **本章思考题**` bridging to the next chapter.
 8. `## 和上一步的关键代码 diff（不含 helper.js）`: key changes without line numbers.
 
-Unpolished drafts (`s07`–`s17`) may still use legacy headings (`## 本章目标`, `## 新增能力`, `## 新增函数速览`, `## 关键代码`) until rewritten. Course diagrams use inline ` ```mermaid ` blocks rendered client-side by `app/components/mermaid-diagram.tsx`. Do not reintroduce external SVG image links or `asset/dasheng/` images.
+Unpolished drafts (`s12`–`s17`) may still use legacy headings (`## 本章目标`, `## 新增能力`, `## 新增函数速览`, `## 关键代码`) until rewritten. Course diagrams use inline ` ```mermaid ` blocks rendered client-side by `app/components/mermaid-diagram.tsx`. Do not reintroduce external SVG image links or `asset/dasheng/` images.
 
 ### Facts that are easy to get wrong
 

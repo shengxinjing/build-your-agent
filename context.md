@@ -2,7 +2,7 @@
 
 给接手本项目的工具 / Agent 读：这里记录**当前目标、已完成进度、生成器抽取机制与下一步待办**。项目长期规则、命令、代码与文章约定请先读 `AGENTS.md`（`CLAUDE.md` 是指向 `AGENTS.md` 的软链接，只改 `AGENTS.md`）。
 
-最后更新：2026-11-23，当前分支 `docs/polish-s03-s06`（PR #1 `feat/scrolly-course` 合并 `main` 后切出），已完成 `intro` 与 `s00`–`s06` 的精简定版、Mermaid 排版验收与代码审查修复（`pnpm run check:secrets`、`pnpm typecheck`、`pnpm lint`、`pnpm test` 全部通过）。
+最后更新：2026-11-23，当前分支 `main`（PR #2 `docs/polish-s03-s06` 已合并），已补回 `s14`–`s17` 的 `loadTask` 空值检查与补丁，并完成第二批 `s07`–`s11` 的精简定版（累计定版 13/21 篇；`pnpm run check:secrets`、`pnpm typecheck`、`pnpm lint`、`pnpm test` 全部通过）。
 
 ## 项目是什么
 
@@ -61,7 +61,7 @@
 - `scripts/generate-build-your-agent-content.mjs` 采用围栏安全的 `stripNonMermaidCodeBlocks` 与不截断代码围栏的 `limitText`，确保主线 **27 个** Mermaid 块完整输出至 `content.generated.cn.mdx`（`scripts/agent-steps.test.mjs` 断言总数精确等于 `27`，并逐章断言 `s00`–`s06` 均含 Mermaid 图）。
 - 新增客户端组件 `app/components/mermaid-diagram.tsx`，在 `app/components/code.tsx` 中按 `lang === "mermaid"` 分流：动态 `import("mermaid")` 懒加载、视口优先串行队列 + 内存缓存、贴合暖色纸面与深色模式的两套 `themeVariables`（并在 `app/globals.css` 补充 `.mermaid-diagram` 样式与暗色滤镜清理）。亮/暗双主题均已完成浏览器实测，无 fallback、无溢出、无起点倒置。
 
-### 4. 专栏文风打磨与生成器首尾抽取升级（已完成 8/21 篇）
+### 4. 专栏文风打磨与生成器首尾抽取升级（已完成 13/21 篇）
 
 - **生成器抽取机制（润色后续章节前必读）**：
   - `escapeMdxText` 会跳过代码围栏与行内反引号，避免转义破坏代码和图表。
@@ -73,19 +73,19 @@
   - **每章各帧主体**：取自 `## 博客代码演进` 下各 `### N. 标题` 的正文说明。
   - **每章末帧收尾（`extractClosingExcerpt`）**：在最后一帧说明后自动追加 `## 适合本节测试的 prompt` / `## 测试 Prompt` 与 `## 扩展阅读...`（散文上限 `1100` 字符）。
   - `s18.md` 走 `extractExtensionReading`，全文标题降一级后作为单步内容输出。
-- **各篇润色状态（8 篇已定版，13 篇待润色）**：
-  - **已定版（8 篇）**：`intro.md`、`s00-llm-http.md`、`s01-agent-loop.md`、`s02-tool-use.md`、`s03-permission.md`、`s04-hooks.md`、`s05-todo-write.md`、`s06-subagent.md`（统一工位陪跑带教口吻、正文零 `—` 破折号、统一 `## 问题` / `## 解决方案` + Mermaid 图结构、每章最后一帧末尾均附有承上启下的 `> **本章思考题**`）。
-  - **待润色（13 篇）**：主线 `s07-skill-loading.md` 至 `s17-mcp-plugin.md`（11 章）、收官篇 `s18.md`（1 篇）、补充阅读 `s16-read-autonomous-agents.md`（1 篇）。这些文件目前仍是初稿句式（偏碎、正文带 `—` 破折号、缺章末 `> **本章思考题**`、缺独立的 `## 问题` / `## 解决方案` 铺垫、部分演进帧说明偏简略）。
+- **各篇润色状态（13 篇已定版，8 篇待润色）**：
+  - **已定版（13 篇）**：`intro.md`、`s00-llm-http.md` 至 `s11-error-recovery.md`（统一工位陪跑带教口吻、正文零 `—` 破折号、统一 `## 问题` / `## 解决方案` + Mermaid 图结构、每章最后一帧末尾均附有承上启下的 `> **本章思考题**`）。
+  - **待润色（8 篇）**：主线 `s12-task-system.md` 至 `s17-mcp-plugin.md`（6 章）、收官篇 `s18.md`（1 篇）、补充阅读 `s16-read-autonomous-agents.md`（1 篇）。这些文件目前仍是初稿句式（偏碎、正文带 `—` 破折号、缺章末 `> **本章思考题**`、缺独立的 `## 问题` / `## 解决方案` 铺垫、部分演进帧说明偏简略）。
 
 ---
 
 ## 下一步待办与待决策（按优先级）
 
-1. **【当前主线】分批润色剩余章节 `s07`–`s18`（及 `s16-read-autonomous-agents.md`）**
-   - 直接参照已定版的 `s00`–`s06` 逐批改写：
+1. **【当前主线】分批润色剩余章节 `s12`–`s18`（及 `s16-read-autonomous-agents.md`）**
+   - 直接参照已定版的 `s00`–`s11` 逐批改写：
      - **口吻与标点**：面向初学者的工位陪跑口吻、大白话解释清楚机制；正文禁用中文破折号 `—`（`U+2014`），改用冒号、括号、逗号或拆句。
      - **小节与字数**：统一采用 `## 问题` / `## 解决方案`（含内嵌 `mermaid` 图或独立 `## 流程图`）、`## 测试 Prompt`、`## 扩展阅读：...`、`## 本地运行与测试`、`## 博客代码演进`、`## 和上一步的关键代码 diff（不含 helper.js）`；开篇控制在 900 字内、单节散文控制在 1100 字内，避免生成 MDX 时被截断出 `……`。
-     - **保留 Mermaid 图表**：切勿删除现有的 ```` ```mermaid ```` 块！确保 `s07`–`s17` 的 Mermaid 块留在被生成器抽取的小节内（如 `解决方案` 或 `流程图`），使生成的 `content.generated.cn.mdx` 保持精确 **27 个** `mermaid` 块（`scripts/agent-steps.test.mjs` 有硬断言；若调整数量需同步更新测试）。
+     - **保留 Mermaid 图表**：切勿删除现有的 ```` ```mermaid ```` 块！确保 `s12`–`s17` 的 Mermaid 块留在被生成器抽取的小节内（如 `解决方案` 或 `流程图`），使生成的 `content.generated.cn.mdx` 保持精确 **27 个** `mermaid` 块（`scripts/agent-steps.test.mjs` 有硬断言；若调整数量需同步更新测试）。
      - **帧说明与思考题**：把 `## 博客代码演进` 中每帧的说明润色顺畅（默认只改帧说明文字、不碰 `diff agent-step` 补丁；若发现工具实现/schema/`handlers` 跨帧拆分违反 `AGENTS.md` 约定需合并帧，须同步改 `scripts/agent-steps.test.mjs` 的 `EXPECTED_STEPS`），并在每章最后一帧末尾补上引出下一章痛点的 `> **本章思考题**`。
      - **事实与命令约定**：手动运行命令与离线单测分开写两个代码块，手动运行统一写 `cd code-agent-course && node sXX-...js`（不套 POSIX 子 shell 括号，兼容 Windows 终端）；`s14` 务必写清是进程内定时调度器而非 OS crontab（见 `AGENTS.md` "Facts that are easy to get wrong"）。
    - 每完成一批后执行：`pnpm run generate:build-your-agent && pnpm test`。
@@ -93,8 +93,8 @@
 2. **用户实机视觉验收反馈跟进**
    - 用户如在本地 `http://localhost:3000/cn/build-your-agent` 预览中提出样式、排版或个别 Mermaid 图布局调整意见，按需微调。
 
-3. **【待用户确认】`s14`–`s17` 的 `loadTask` 空值检查疑似退步**
-   - `s14-cron-scheduler.js` 至 `s17-mcp-plugin.js` 的 `loadTask(id)` 相比 `s12`/`s13` 少了 `if (!existsSync(taskPath(id))) return null;`，对不存在的任务 ID 调用 `claim_task` / `complete_task` / `canStart` 可能直接抛异常。目前遵循不擅改车主代码的原则未动源码，待用户拍板是否补回（若修改 `.js`，需同步更新对应章节的 `diff agent-step` 补丁）。
+3. **`s14`–`s17` 的 `loadTask` 空值检查修复（已完成）**
+   - 已在 `s14-cron-scheduler.js` 至 `s17-mcp-plugin.js` 补回 `if (!existsSync(taskPath(id))) return null;` 及 `canStart` / `claimTask` / `completeTask` / `runGetTask` 的安全空值判断，同步移除 `s14-cron-scheduler.md` 第 1 帧中删掉该检查的旧补丁，并在 `s14-cron-scheduler.test.js` 补充不存在任务 ID 的回归单测。
 
 4. **本地演示密钥管理与防泄漏机制（已完成）**
    - `code-agent-course/helper.js` 默认从 `process.env` 或 gitignored 的 `code-agent-course/.env.local` 读取 `LLM_PROVIDER` / `LLM_API_TOKEN`（及可选 `LLM_MODEL` / `LLM_BASE_URL`），模板见 `code-agent-course/.env.local.example`；生成器 `renderSafeHelper()` 剥离 `@local-env` 区块以保持网页版代码面板干净。
@@ -108,7 +108,7 @@
 pnpm run generate:build-your-agent   # 修改课程 .md / .js 后重新生成 MDX（会自动校验全部 128 个演进帧）
 pnpm run check:secrets               # 检查仓库内是否存在误填的真实密钥或 .env 文件
 pnpm typecheck && pnpm lint          # TypeScript 类型检查 + ESLint
-pnpm test                            # Vitest 跑 18 个章节单测 (89 项) + Node test 跑生成器、安全与前端约束测试 (42 项)
+pnpm test                            # Vitest 跑 18 个章节单测 (90 项) + Node test 跑生成器、安全与前端约束测试 (42 项)
 ```
 
 - 默认只改 `code-agent-course/` 下的源文件（除非用户明确要求改前端或脚本）；**绝不手改** `app/build-your-agent/content.generated.cn.mdx` 与 `app/build-your-agent/snippets/code-agent-course-helper.js`。

@@ -275,6 +275,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -295,11 +296,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -313,6 +316,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -342,11 +346,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;

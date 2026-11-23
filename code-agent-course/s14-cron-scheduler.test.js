@@ -6,6 +6,9 @@ import { withFakeLlm } from "./fake-llm.js";
 import { cronMatches, validateCron } from "./helper.js";
 import {
   agentLoop,
+  canStart,
+  claimTask,
+  completeTask,
   scheduleJob,
   cancelJob,
   listCronJobs,
@@ -127,3 +130,11 @@ test("queue processor 自动交付 cron 任务", () =>
       expect(await processCronQueue(async () => "n")).toBe(true);
       expect(consumeCronQueue()).toHaveLength(0);
     })));
+
+// 不存在的任务 ID 应返回安全错误，不抛 ENOENT。
+test("不存在的任务 ID 安全返回错误", () =>
+  withTmpEnv(() => {
+    expect(canStart("task_missing")).toBe(false);
+    expect(claimTask("task_missing")).toBe("Error: Task task_missing not found");
+    expect(completeTask("task_missing")).toBe("Error: Task task_missing not found");
+  }));

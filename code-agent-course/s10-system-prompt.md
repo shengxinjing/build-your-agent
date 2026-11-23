@@ -1,32 +1,24 @@
-# s10：System Prompt —— 从固定文本变成装配流水线
+# s10：System Prompt - 从固定文案升级为按状态装配的流水线
 
-新人每天上班前需要一份任务说明，但不同场景需要不同提醒：有时要强调安全，有时要带上记忆，有时要加载技能。`s10` 把这份说明书变成装配线，每轮按当前情况组装给他看。
+上一章 `s09` 给 Agent 加上了跨会话记忆，但系统提示词还是靠 `buildSystem()` 在一条大模板字符串里硬拼出来的。工具列表没有自动同步，技能为空时还会拼出 `(no skills found)`，后面再叠加任务图、团队协作和 MCP 工具只会越拼越乱。
 
+这一章我们把系统提示词改造成分段装配流水线。**System Prompt 不是写死的静态文案，而是根据当前运行时状态动态拼出的输入流水线：状态没变走缓存，状态一变立刻刷新。**
 
-## 本章目标
+## 问题
 
-system prompt 不应该是一大段永远不变的字符串。
+Agent 的运行时状态随时在变：当前注册了哪些工具、扫描到了哪些技能、`MEMORY.md` 索引里有没有新记忆，每一轮都可能不同。把所有指令揉进一段长字符串，不仅越改越难维护，还很容易让空段落占位，或者工具改了状态后模型看到的仍然是过期提示词。
 
-`s10` 把 prompt 拆成多个 section，每轮根据当前运行时状态装配。
+## 解决方案
 
-## 新增能力
-
-本章不减少已有能力，只把已有的工具、技能、压缩和记忆说明改成按段装配。
-
-- `assembleSystemPrompt(context)`：按 section 拼 prompt。
-- `getSystemPrompt(context)`：相同 context 走缓存。
-- `buildContext()`：收集工具、技能、记忆等运行时状态。
-- 工具执行后重新计算 prompt。
-
-## 流程图
+我们把大字符串拆成 `PROMPT_SECTIONS` 五个分段函数，用 `SECTION_ORDER` 固定拼接顺序，由 `buildContext()` 从真实运行状态派生上下文，再通过 `getSystemPrompt()` 按状态做缓存：
 
 ```mermaid
 flowchart TD
-  subgraph NEW["s10 新增：按需拼装系统提示词"]
-    PS["PROMPT_SECTIONS<br/>identity · tools · workspace 始终带<br/>memory 按需带"] --> AS["按 SECTION_ORDER 拼接<br/>用空行连成一段"]
-    AS --> CA{"上下文和上次一样？"}
-    CA -->|一样| HIT["直接复用缓存 lastSystemPrompt"]
-    CA -->|不一样| NEWP["重新拼装并更新缓存"]
+  subgraph NEW["s10 新增：按运行时状态装配系统提示词"]
+    BC["buildContext()<br/>读取当前 tools · skills · memories"] --> CA{"context key 和上次一样？"}
+    CA -->|一样| HIT["复用缓存 lastSystemPrompt"]
+    CA -->|不一样| AS["assembleSystemPrompt()<br/>按 SECTION_ORDER 拼 5 段，跳过 null"]
+    AS --> NEWP["更新缓存并返回新 prompt"]
   end
   M["messages"] --> C["压缩 + 加载记忆"]
   C --> L["LLM"]
@@ -34,97 +26,16 @@ flowchart TD
   NEWP -->|system| L
   L --> H["handlers<br/>bash · read · write ..."]
   H -->|工具结果追加到 messages| M
-```
-```text
-运行时状态
-  |
-  +--> tools
-  +--> skills
-  +--> memory index
-  +--> compact policy
-  |
-  v
-assembleSystemPrompt(context)
-  |
-  v
-system prompt
-  |
-  v
-call LLM
+  H -.->|每轮工具后重新 buildContext| BC
 ```
 
-## 为什么这一步重要
+这套装配流水线有三个关键设计：
 
-prompt 是输入流水线，不是固定文案。
+- **固定顺序、空段省略**：`SECTION_ORDER` 锁定为 `["identity", "tools", "skills", "compaction", "memory"]`。`identity`（读取当前工作目录）和 `compaction` 始终输出；`tools`、`skills`、`memory` 在为空时返回 `null` 自动跳过，不往提示词里塞废话。
+- **同态缓存、变动失效**：`getSystemPrompt()` 把 `context` 序列化为 key，状态没变就直接复用上次结果（保持前缀稳定，也有利于服务端 Prompt Cache）；一旦变动立即重拼。
+- **每轮工具后刷新**：`agentLoop` 在进入循环前和每批工具跑完后都会重新调用 `buildContext()` 和 `getSystemPrompt()`，让后续动态增删工具或写入记忆能马上反映到提示词里。
 
-当工具、技能、记忆变化时，模型看到的系统信息也应该变化。后面的 MCP 动态工具池就是这个思想的延伸。
-
-## 代码入口
-
-- JS：[s10-system-prompt.js](./s10-system-prompt.js)
-- Test：[s10-system-prompt.test.js](./s10-system-prompt.test.js)
-
-## 运行
-
-```bash
-node code-agent-course/s10-system-prompt.js
-```
-
-## 参考实现提醒
-
-System Prompt 不是一段越写越长的常量，而是运行时输入流水线：
-
-- 身份、工具、技能目录、记忆、MCP 状态都应该按当前状态装配。
-- prompt section 要有稳定顺序，避免同样状态下模型看到的规则忽前忽后。
-- 缓存 prompt 可以省成本，但状态变化后必须失效，否则模型会看见旧世界。
-
-## 新增函数速览
-
-- `assembleSystemPrompt(context)`：按固定顺序把身份、工具、技能、压缩规则和记忆拼成最终 system prompt。
-- `getSystemPrompt(context)`：按上下文 key 缓存 system prompt，避免每一轮重复拼装。
-- `resetSystemPromptCache()`：测试或配置变化时清空 prompt 缓存。
-- `buildContext()`：读取当前工具名、skill 列表和 memory 索引，生成 prompt 装配所需的 context；工作目录由 `identity` section 直接读取。
-
-## 关键代码
-
-`s10` 把一整坨 prompt 拆成 section：
-
-```js
-const PROMPT_SECTIONS = {
-  identity: () =>
-    `You are a coding agent at ${process.cwd()}. Use tools to solve tasks. Before a multi-step task, use todo_write to plan and update status as you go. For a complex sub-problem, use the task tool to spawn a subagent.`,
-  tools: (ctx) => (ctx.tools.length ? `Available tools: ${ctx.tools.join(", ")}.` : null),
-  skills: (ctx) =>
-    ctx.skills ? `Skills available:\n${ctx.skills}\nUse load_skill to load a skill's full content when needed.` : null,
-  compaction: () => "When context gets large, call compact to summarize earlier work and free space.",
-  memory: (ctx) =>
-    ctx.memories
-      ? `Memories available:\n${ctx.memories}\nRespect user preferences from memory; new ones are saved automatically.`
-      : null,
-};
-const SECTION_ORDER = ["identity", "tools", "skills", "compaction", "memory"];
-```
-
-每轮根据真实运行状态装配：
-
-```js
-export function assembleSystemPrompt(context) {
-  return SECTION_ORDER.map((key) => PROMPT_SECTIONS[key](context)).filter(Boolean).join("\n\n");
-}
-```
-
-`agentLoop()` 在开始时取得一次 prompt；每轮工具执行后重新构建 context。context 没变时，`getSystemPrompt()` 会命中缓存：
-
-```js
-let context = buildContext();
-let system = getSystemPrompt(context);
-
-// 工具轮结束后
-context = buildContext();
-system = getSystemPrompt(context);
-```
-
-注意：技能和记忆仍复用 `helper.js` 里的 `parseFrontmatter`，本章没有新增 frontmatter 解析逻辑。源码同时去掉了 s09 的三条压缩日志，但自动压缩、手动压缩和应急压缩能力仍然保留。
+顺手说明：本章源码同时去掉了 `s09` 里的三行压缩教学日志，但自动压缩、手动压缩和应急压缩能力全部保留。
 
 ## 测试 Prompt
 
@@ -132,85 +43,37 @@ system = getSystemPrompt(context);
 先列出当前可用工具和技能，再创建一个小文件 prompt-check.txt。
 ```
 
-观察重点：system prompt 应该按当前工具、技能、记忆等运行时状态组装，而不是固定字符串。
+运行后可以看到模型能准确列出当前注册的全部工具名（来自 `tools` 段）以及已扫描到的技能（若有），说明系统提示词已经按真实运行状态动态拼装，随后再正常调用 `write_file` 创建文件。
 
 ## 扩展阅读：商业级 Agent 怎么做 Prompt 装配
 
-成熟 agent 看到的 system prompt 通常由运行时状态组装，而不是一段永远不变的文本：
+商业级 Agent 发给模型的 system prompt 通常都不是静态文案，而是由运行时按当前会话状态逐段装配出来的：
 
-- Claude Code 会把工具、权限、项目规则和记忆等当前信息加入模型上下文。
-- Codex 由运行时把会话状态、工具、sandbox / approval 约束和 memory 组合成 provider 请求。
-- OpenCode 会按系统上下文、项目规则、工具和会话状态组织模型输入。
+- **Claude Code**：运行时会把当前可用工具、权限模式、项目规则与记忆状态动态装配进模型上下文。参考 [Claude Code Memory](https://code.claude.com/docs/en/memory)。
+- **Codex**：由核心运行时把会话状态、工具清单、sandbox / approval 约束和 memory 统一组装成 provider 请求。参考 [Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)。
+- **opencode**：按系统上下文、项目规则、工具与会话状态分段组织提示词输入，方便不同环境按需裁剪。参考 [OpenCode system prompt 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session/prompt)。
 
-可继续阅读：[Claude Code memory](https://code.claude.com/docs/en/memory)、[Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)、[OpenCode system prompt 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session/prompt)。本章的 `PROMPT_SECTIONS` 就是最小教学版：section 的顺序固定，是否出现由当前 context 决定。
+**顺序固定保缓存、按状态裁剪防陈旧，这就是动态 System Prompt 装配的核心原则。**
 
-## 一句话总结
+## 本地运行与测试
 
-`s10` 把 system prompt 变成按状态装配的输入流水线。
+交互运行（从仓库根目录执行）：
 
-## 与 s09 的关键代码 diff（不含 helper.js）
+```bash
+cd code-agent-course && node s10-system-prompt.js
+```
 
-下面只展示 system prompt 装配方式和 loop 接入点；压缩日志等非核心变化不放进主 diff。
+离线单测（在仓库根目录执行，无需 API Token）：
 
-```diff
---- s09-memory.js
-+++ s10-system-prompt.js
--function buildSystem() {
--  const index = readMemoryIndex();
-+const PROMPT_SECTIONS = {
-+  identity: () =>
-+    `You are a coding agent at ${process.cwd()}. Use tools to solve tasks. Before a multi-step task, use todo_write to plan and update status as you go. For a complex sub-problem, use the task tool to spawn a subagent.`,
-+  tools: (ctx) => (ctx.tools.length ? `Available tools: ${ctx.tools.join(", ")}.` : null),
-+  skills: (ctx) =>
-+    ctx.skills ? `Skills available:\n${ctx.skills}\nUse load_skill to load a skill's full content when needed.` : null,
-+  compaction: () => "When context gets large, call compact to summarize earlier work and free space.",
-+  memory: (ctx) =>
-+    ctx.memories
-+      ? `Memories available:\n${ctx.memories}\nRespect user preferences from memory; new ones are saved automatically.`
-+      : null,
-+};
-+const SECTION_ORDER = ["identity", "tools", "skills", "compaction", "memory"];
-+
-+export function assembleSystemPrompt(context) {
-+  return SECTION_ORDER.map((key) => PROMPT_SECTIONS[key](context)).filter(Boolean).join("\n\n");
-+}
-+
-+let lastContextKey = null;
-+let lastSystemPrompt = null;
-+export function getSystemPrompt(context) {
-+  const key = JSON.stringify(context);
-+  if (key === lastContextKey && lastSystemPrompt) return lastSystemPrompt;
-+  lastContextKey = key;
-+  lastSystemPrompt = assembleSystemPrompt(context);
-+  return lastSystemPrompt;
-+}
-+
-+export function buildContext() {
-+  const skills = listSkills();
-+  return {
-+    tools: tools.map((t) => t.function.name),
-+    skills: skills === "(no skills found)" ? "" : skills,
-+    memories: readMemoryIndex(),
-+  };
-+}
-
--  const system = buildSystem(); // s09：含记忆索引，每个用户请求构建一次
-+  let context = buildContext(); // s10：从真实状态派生 context
-+  let system = getSystemPrompt(context); // s10：运行时组装（替换 s09 的 buildSystem）
-
-+    context = buildContext();
-+    system = getSystemPrompt(context);
+```bash
+pnpm vitest run code-agent-course/s10-system-prompt.test.js
 ```
 
 ## 博客代码演进
 
-下面 7 个 patch 专门用于博客右侧的代码切换。第一步基于 `s09-memory.js`，后面的每一步都继续修改上一帧，最后必须得到完整的 `s10-system-prompt.js`。
-
-每一步的代码都可以运行。前五步把新的拼装方式一点点写出来，旧的 `buildSystem` 一直留着并继续工作；第 6 步才让 loop 换用新的写法，同时删掉旧函数。
-
 ### 1. 把提示词拆成小段：先写“身份”
 
-s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中一部分很不方便。现在换一种组织方式：`PROMPT_SECTIONS` 是一张表，每一项是一个小函数，负责生成提示词的一段。先放第一段 `identity`，说明“你是谁、该怎么干活”，它不依赖任何状态，每次都一样。旧的 `buildSystem` 先不动。
+`s09` 的 `buildSystem` 把所有规则都写死在一条长字符串里，改一段就要动整块。现在换一种组织法：`PROMPT_SECTIONS` 是一张表，每一项都是负责生成一段文案的小函数。我们先放第一段 `identity`，说明“你是谁、在哪里、该怎么干活”。旧的 `buildSystem` 暂时留着，保证当前帧仍可运行。
 
 ```diff agent-step
 @@
@@ -225,9 +88,9 @@ s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中�
    const index = readMemoryIndex();
 ```
 
-### 2. 再加四段：工具、技能、压缩、记忆
+### 2. 再补四段：工具、技能、压缩、记忆
 
-继续往表里加段落。每个函数接收一个 `ctx`，里面是当前的真实状态。关键在于可以返回 `null`：没有工具就不写工具那段，没有技能就不写技能那段，没有记忆就不写记忆那段。这样提示词里不会出现“可用技能：（无）”这种空话，模型看到的每一段都有用。
+接着往 `PROMPT_SECTIONS` 里补齐其余四段。每个函数接收当前状态对象 `ctx`，最大的好处是支持返回 `null`：没有工具、没有技能或没有记忆时直接跳过对应段落，不再往提示词里拼“可用技能：(no skills found)”这种无效空话。
 
 ```diff agent-step
 @@
@@ -244,9 +107,9 @@ s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中�
  };
 ```
 
-### 3. 按固定顺序拼起来
+### 3. 按固定顺序拼成完整提示词
 
-`SECTION_ORDER` 规定各段的先后顺序。`assembleSystemPrompt` 按这个顺序依次调用每一段的函数，去掉返回 `null` 的，剩下的用空行连接成完整的提示词。顺序固定很重要：同样的状态永远得到完全相同的文本，后面做缓存才有意义。
+`SECTION_ORDER` 显式规定五段的先后顺序，`assembleSystemPrompt` 按序调用每个段落函数，用 `.filter(Boolean)` 滤掉 `null`，再用空行拼成最终文案。顺序必须固定：同样的状态每次都会产出逐字节一致的提示词，后面的缓存和服务端前缀复用才立得住。
 
 ```diff agent-step
 @@
@@ -262,9 +125,9 @@ s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中�
  function buildSystem() {
 ```
 
-### 4. 从真实状态得到 context
+### 4. 从真实运行时状态派生 context
 
-各段函数需要的 `ctx` 从哪来？`buildContext` 直接读程序当前的状态：`tools` 数组里登记了哪些工具，`skills/` 里扫描到了哪些技能，记忆索引里有什么。注意它不去分析用户说了什么，只看事实。以后新增一个工具或一条记忆，提示词会自动跟着变，不需要手动同步。
+段落函数需要的 `ctx` 从哪里来？`buildContext` 直接读取程序当下的真实状态：从 `tools` 提取工具名列表，从 `listSkills()` 拿技能目录（空提示归一成空串），从 `readMemoryIndex()` 读记忆索引。以后新增工具或写入新记忆，提示词会自动跟着变，不用再人工两头同步。
 
 ```diff agent-step
 @@
@@ -282,9 +145,9 @@ s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中�
  function buildSystem() {
 ```
 
-### 5. 状态没变就不重新拼
+### 5. 状态没变就直接走缓存
 
-拼装提示词虽然不慢，但每一轮都重复拼出一模一样的文本没有必要。`getSystemPrompt` 把 `context` 转成 JSON 字符串当作标记，和上一次的比较：一样就直接返回上次的结果，不一样才重新拼装并记下来。`resetSystemPromptCache` 清空这份记录，测试时会用到。
+虽然拼字符串本身很快，但状态没变时每轮重拼也没必要。`getSystemPrompt` 把 `context` 转成 JSON 字符串作为缓存键，和上次一样就直接返回 `lastSystemPrompt`，不一样才重新调用 `assembleSystemPrompt` 并刷新缓存。顺手提供 `resetSystemPromptCache`，方便单测隔离状态。
 
 ```diff agent-step
 @@
@@ -308,9 +171,9 @@ s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中�
    const skills = listSkills();
 ```
 
-### 6. loop 换用新的拼装方式
+### 6. 把主循环切换到动态装配
 
-现在可以替换了。进入循环前，先 `buildContext` 再 `getSystemPrompt`，得到这一轮的提示词。每执行完一批工具，再做一次同样的事：工具可能刚写了一条记忆，状态变了就会重新拼装，没变就直接用缓存。旧的 `buildSystem` 不再有人调用，整个删掉。
+准备工作全就绪，现在正式切换：进入 `agentLoop` 前先 `buildContext()` 再 `getSystemPrompt(context)`；每执行完一批工具后再刷新一次，状态没变直接命中缓存，状态变了立刻拿到新提示词。旧的 `buildSystem` 不再需要，直接删掉。
 
 ```diff agent-step
 @@
@@ -349,9 +212,11 @@ s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中�
  }
 ```
 
-### 7. 收尾：压缩判断写成一行
+### 7. 收尾：精简压缩日志并更新提示符
 
-最后做一点整理：自动压缩的判断缩成一行，上一章为了演示而加的三行压缩日志在这一章的源码里去掉了，提示符改成 `s10 >> `。本章没有增加任何新工具，改变的只是系统提示词的生成方式：从一个写死的字符串，变成按当前状态一段段拼出来的结果。
+最后做点收尾整理：把自动压缩判断收成一行，清掉前两章演示压缩时加的三条日志（压缩逻辑本身不变），再把交互提示符切到 `s10 >> `。这一章没有新增工具，而是把系统提示词从“手写常量”升级成了“按状态装配的流水线”。
+
+> **本章思考题**：到这里，技能、压缩、记忆、动态提示词都就位了。但只要放进真实网络环境，模型接口随时可能返回 `429` 限流、`529` 过载，或者回答太长被半路截断，现在的循环一碰就断。怎么按错误类型走不同的恢复分支，让 Agent 抗住真实抖动？下一章 `s11` 我们来做 Error Recovery。
 
 ```diff agent-step
 @@
@@ -383,4 +248,61 @@ s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中�
 +    promptLabel: "s10 >> ",
      onPrompt: async ({ prompt, messages, ask }) => {
        return agentLoop(messages, ask);
+```
+
+## 和上一步的关键代码 diff（不含 helper.js）
+
+```diff
+--- s09-memory.js
++++ s10-system-prompt.js
+@@
+-function buildSystem() {
+-  const index = readMemoryIndex();
++const PROMPT_SECTIONS = {
++  identity: () =>
++    `You are a coding agent at ${process.cwd()}. Use tools to solve tasks. Before a multi-step task, use todo_write to plan and update status as you go. For a complex sub-problem, use the task tool to spawn a subagent.`,
++  tools: (ctx) => (ctx.tools.length ? `Available tools: ${ctx.tools.join(", ")}.` : null),
++  skills: (ctx) =>
++    ctx.skills ? `Skills available:\n${ctx.skills}\nUse load_skill to load a skill's full content when needed.` : null,
++  compaction: () => "When context gets large, call compact to summarize earlier work and free space.",
++  memory: (ctx) =>
++    ctx.memories
++      ? `Memories available:\n${ctx.memories}\nRespect user preferences from memory; new ones are saved automatically.`
++      : null,
++};
++const SECTION_ORDER = ["identity", "tools", "skills", "compaction", "memory"];
++
++export function assembleSystemPrompt(context) {
++  return SECTION_ORDER.map((key) => PROMPT_SECTIONS[key](context)).filter(Boolean).join("\n\n");
++}
++
++let lastContextKey = null;
++let lastSystemPrompt = null;
++export function getSystemPrompt(context) {
++  const key = JSON.stringify(context);
++  if (key === lastContextKey && lastSystemPrompt) return lastSystemPrompt;
++  lastContextKey = key;
++  lastSystemPrompt = assembleSystemPrompt(context);
++  return lastSystemPrompt;
++}
++export function resetSystemPromptCache() {
++  lastContextKey = null;
++  lastSystemPrompt = null;
++}
++
++export function buildContext() {
++  const skills = listSkills();
++  return {
++    tools: tools.map((t) => t.function.name),
++    skills: skills === "(no skills found)" ? "" : skills,
++    memories: readMemoryIndex(),
++  };
++}
+@@
+-  const system = buildSystem();
++  let context = buildContext();
++  let system = getSystemPrompt(context);
+@@
++    context = buildContext();
++    system = getSystemPrompt(context);
 ```

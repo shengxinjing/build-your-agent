@@ -1,161 +1,45 @@
-# s11：Error Recovery —— 失败进入恢复分支
+# s11：Error Recovery - 给失败分类，让循环进入恢复分支
 
-真实工作里，新人会遇到接口限流、服务过载、输出写到一半和材料太长。`s11` 不再让 agent 遇错就退出，而是先判断错误类型，再选择等待重试、续写、压缩或停止。
+上一章 `s10` 把系统提示词改造成了按状态装配的流水线，但眼下只要真实接口抛一次 `429` 限流、`529` 过载，或者回答写太长被半路截断，主循环就会直接中断，把半成品或异常堆栈直接甩给用户。
 
-## 本章目标
+这一章我们给模型调用装上分类恢复机制。**错误恢复不是闭着眼把请求套一层循环死重试，而是先给失败分清类型，再分别走退避等待、切换备用模型、提额续写或应急压缩。**
 
-`s10` 已经能动态组装 system prompt，但一次 LLM 请求失败时，主循环仍缺少恢复策略。
+## 问题
 
-`s11` 保留前面的工具、计划、子代理、技能、压缩、记忆和动态 prompt，只给 LLM 调用增加四条恢复路径：
+调用真实 LLM 接口时，不同故障的对策完全相反：`429` 限流和 `529` 过载属于瞬态抖动，需要退避等待甚至切备用模型；输出被截断需要拉高 `max_tokens` 并接着写；上下文超限必须先压缩再重发；而参数错、鉴权错这类硬伤重试再多次也没用。不加区分，要么一碰抖动就崩，要么在必败错误上白白空转。
 
-- `429` 限流：等待后重试。
-- `529` 服务过载：等待后重试，连续发生时可切换备用模型。
-- `finish_reason: "length"`：提高输出上限，仍被截断时继续生成。
-- 上下文过长：先做一次应急压缩，再重试当前请求。
+## 解决方案
 
-## 流程图
+我们用 `RecoveryState` 集中跟踪一次提问里的所有恢复计数，用 `withRetry()` 包住瞬态重试，再在 `agentLoop` 里分别处理上下文超限与输出截断：
 
 ```mermaid
 flowchart TD
-  M["messages"] --> P["组装提示词"] --> C["压缩 + 加载记忆"] --> L["LLM 调用<br/>外包 try / catch"]
-  L -->|正常| H["handlers"]
+  M["messages"] --> P["组装提示词 + 压缩 + 记忆"] --> W["withRetry(callLlm)"]
+  W -->|429 限流 / 529 过载| R3["指数退避 + 随机抖动重试（最多 10 次）<br/>连续 3 次 529 可切 FALLBACK_MODEL_ID"]
+  R3 --> W
+  W -->|抛出上下文过长| R2["reactiveCompact 应急压缩<br/>最多重试 1 次"]
+  R2 --> W
+  W -->|其他不可恢复错误| ERR["打印错误日志并返回 [Error]"]
+  W -->|正常返回 choice| LEN{"finish_reason === length？"}
+  LEN -->|是| R1["先升 maxTokens 8K → 64K<br/>仍截断则注入续写提示（最多 3 次）"]
+  R1 --> W
+  LEN -->|否| H["进入工具执行或返回答案"]
   H -->|工具结果| M
-  L -->|出错| E{"是哪种错误？"}
-  E -->|max_tokens| R1["先调大 max_tokens<br/>再提示模型接着写<br/>最多 3 次"]
-  E -->|上下文过长| R2["应急压缩后<br/>重试一次<br/>仍超限则退出"]
-  E -->|429 / 529| R3["指数退避 +<br/>随机抖动重试<br/>次数有上限"]
-  R1 & R2 & R3 -->|重新调用| L
-```
-```text
-call LLM
-  |
-  +-- 成功 ------------------------> 正常处理
-  |
-  +-- 429 / 529 ------------------> 等待 --> 重试
-  |
-  +-- finish_reason = length -----> 提高上限 / 续写
-  |
-  +-- prompt too long ------------> reactiveCompact --> 重试一次
-  |
-  +-- 其他错误 --------------------> 返回 [Error]
 ```
 
-## 为什么这一步重要
+四条恢复路径的触发条件和上限都很明确：
 
-重试不是简单地再调用一次接口。限流需要等待，输出截断需要续写，上下文超限需要先腾出空间，不可恢复错误则应该停止。`RecoveryState` 把这些状态集中保存，主循环才知道自己是在正常执行还是恢复。
+| 异常或状态 | 处理方式 | 保护上限 |
+|---|---|---|
+| `429` 限流 | `withRetry()` 指数退避（500ms 起翻倍，封顶 32s，加 0%–25% 抖动） | 最多重试 10 次 |
+| `529` 过载 | 退避重试，连续 3 次且配置了 `FALLBACK_MODEL_ID` 时切备用模型 | 共享 10 次重试上限 |
+| `finish_reason: "length"` | 首次把 `maxTokens` 从 8000 升到 64000 重试；再截断则追加续写提示 | 最多续写 3 次 |
+| 上下文过长 | 调用 `s08` 的 `reactiveCompact()` 压缩早期历史后重试 | 每次提问限 1 次 |
 
-## 代码入口
+补充两点接口细节：
 
-- JS：[s11-error-recovery.js](./s11-error-recovery.js)
-- Test：[s11-error-recovery.test.js](./s11-error-recovery.test.js)
-
-## 运行
-
-```bash
-node code-agent-course/s11-error-recovery.js
-```
-
-## 新增函数速览
-
-- `RecoveryState`：记录是否提高过输出上限、续写次数、连续 `529` 次数、是否做过应急压缩，以及当前备用模型。
-- `retryDelay(attempt, retryAfter)`：计算指数退避时间；第二个参数是已经换算成毫秒的等待时间。
-- `withRetry(fn, state)`：包住一次 LLM 请求，只对 `429` 和 `529` 这类瞬态错误退避重试。
-- `setSleepFn(fn)`：测试入口，用立即返回的函数替换真实等待。
-
-`reactiveCompact(messages)` 来自 s08，本章只是把它接到“上下文过长”的恢复分支，不是重新实现一套压缩。
-
-## 关键代码
-
-恢复状态集中在一个对象里：
-
-```js
-export class RecoveryState {
-  constructor() {
-    this.escalated = false; // 是否已把 max_tokens 升到 64K
-    this.recoveryCount = 0; // 已续写次数
-    this.consecutive529 = 0; // 连续 529 次数
-    this.attemptedReactiveCompact = false; // 是否已应急压缩过
-    this.currentModel = null; // null = provider 默认模型；切换后 = 备用模型
-  }
-}
-```
-
-`withRetry()` 负责处理接口暂时不可用。成功后会清零连续 `529` 计数；普通错误不在这里吞掉，而是交回主循环：
-
-```js
-export async function withRetry(fn, state) {
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
-    try {
-      const result = await fn();
-      state.consecutive529 = 0;
-      return result;
-    } catch (error) {
-      const msg = String(error.message);
-      if (isOverloaded(msg)) {
-        state.consecutive529 += 1;
-        const fallback = process.env.FALLBACK_MODEL_ID;
-        if (state.consecutive529 >= MAX_CONSECUTIVE_529 && fallback) {
-          state.currentModel = fallback;
-          state.consecutive529 = 0;
-          console.log(`[529 x${MAX_CONSECUTIVE_529}] switching to ${fallback}`);
-        }
-        await sleep(retryDelay(attempt));
-        continue;
-      }
-      if (isRateLimit(msg)) {
-        await sleep(retryDelay(attempt));
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw new Error(`Max retries (${MAX_RETRIES}) exceeded`);
-}
-```
-
-主循环把真正的 LLM 请求传给 `withRetry()`：
-
-```js
-choice = await withRetry(
-  () =>
-    callLlm(buildRequest(messages, memoriesContent), {
-      system,
-      tools,
-      model: state.currentModel,
-      maxTokens,
-    }),
-  state,
-);
-```
-
-如果第一次收到 `finish_reason: "length"`，代码把 `maxTokens` 从 `8000` 提高到 `64000`，然后重新请求。这一次不会先保存被截断的文本。若提高上限后仍被截断，才把当前 assistant 文本加入 `messages`，再追加续写提示，最多续写三次。
-
-上下文过长走另一条路径：`reactiveCompact()` 只允许自动执行一次；再次失败就返回 `[Error]`，避免无限压缩重试。
-
-## 接口差异：`max_tokens` 和 `length`
-
-Python 参考代码判断：
-
-```py
-if response.stop_reason == "max_tokens":
-```
-
-JavaScript 版本判断：
-
-```js
-if (choice.finish_reason === "length") {
-```
-
-两者表示同一件事：模型还没说完，本次请求的输出额度已经用完。字段不同是因为接口规范不同：
-
-| 接口 | 截断字段 | 截断值 | 工具调用值 | 自然结束值 |
-| --- | --- | --- | --- | --- |
-| Anthropic Messages API | `response.stop_reason` | `max_tokens` | `tool_use` | `end_turn` |
-| OpenAI-compatible Chat Completions | `choices[0].finish_reason` | `length` | `tool_calls` | `stop` |
-
-Python 参考实现使用 Anthropic SDK；JS 版通过 OpenAI-compatible `/chat/completions` 接口统一调用 OpenAI、DeepSeek 和 Kimi，所以读取 `data.choices[0]`。
-
-参考：[Anthropic stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)；[OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。
+- **协议字段差异**：Anthropic Messages API 用 `response.stop_reason == "max_tokens"` 表示截断。本教程 JS 版走 OpenAI-compatible `/chat/completions`，对应判断 `choice.finish_reason === "length"`（工具调用是 `"tool_calls"`，正常结束是 `"stop"`）。
+- **预留 `Retry-After` 参数**：`retryDelay(attempt, retryAfter)` 已留出毫秒级的 `retryAfter` 参数。后续在 `callLlm()` 里把 HTTP `Retry-After` 响应头换算成毫秒挂到错误对象上，就能直接优先遵守服务端等待时间。
 
 ## 测试 Prompt
 
@@ -163,124 +47,37 @@ Python 参考实现使用 Anthropic SDK；JS 版通过 OpenAI-compatible `/chat/
 请输出一份尽可能详细的 80 步 agent 开发计划；如果输出被截断，请继续，不要从头重复。
 ```
 
-自然 prompt 不一定触发 `429` 或 `529`，但可能触发 `finish_reason: "length"`。测试文件通过模拟响应稳定覆盖限流、过载、截断和上下文超限分支。
-
-## 进阶需求：支持 `Retry-After`
-
-本章的 `withRetry()` 目前只从错误文本识别 `429` / `529`，然后调用 `retryDelay(attempt)` 自己计算等待时间。真实 HTTP API 有时会返回：
-
-```http
-HTTP/1.1 429 Too Many Requests
-Retry-After: 10
-```
-
-`Retry-After` 可以是秒数，也可以是一个 HTTP 日期。实际接入时，应先把 header 换算成毫秒，再传给 `retryDelay(attempt, retryAfterMs)`；不能把字符串 `"10"` 直接当成 10 毫秒。
-
-本教程暂时没有把 response header 放进错误对象。升级方向是：`callLlm()` 读取 header，附到抛出的错误上；`withRetry()` 优先采用服务端给出的等待时间，没有 header 时再使用指数退避。
+自然对话不一定刚好撞上 `429` 或 `529`，但超长回答容易触发 `finish_reason: "length"` 的提额与续写分支。限流退避、连续 `529` 切备用模型、上下文超限应急压缩以及不可恢复错误的安全返回，都可以通过下面的离线单测稳定覆盖。
 
 ## 扩展阅读：商业级 Agent 怎么做错误恢复
 
-商业级 agent 通常按失败发生的阶段决定恢复动作，而不是用一个大 `try/catch` 处理所有问题：
+商业级 Agent 通常按失败发生的阶段决定恢复动作，而不会用一个大 `try/catch` 笼统处理所有异常：
 
-- Claude Code 会区分模型请求、工具执行、权限确认和上下文管理；不同阶段的失败需要不同恢复方式。
-- Codex 的 turn loop 同时跟踪 provider、sandbox、approval、持久会话和 compaction 状态，因此能判断应该重试请求、恢复会话还是返回工具错误。
-- OpenCode 把 provider 调用、工具注册、session 事件和上下文处理分开，错误可以归属到具体阶段。
+- **Claude Code**：区分模型请求、工具执行、权限确认和上下文管理等环节，不同阶段的故障走各自的恢复或回退策略。参考 [Claude Code 文档](https://code.claude.com/docs/en/overview)。
+- **Codex**：turn loop 显式维护 provider、sandbox、approval、会话持久化与 compaction 状态，能准确判断该重试请求、恢复会话还是把工具报错交回模型。参考 [Codex 开源代码](https://github.com/openai/codex/tree/main/codex-rs/core)。
+- **opencode**：把 provider 调用、工具注册、session 事件和上下文管理拆层隔离，让每类错误都能归属到具体执行环节。参考 [OpenCode session 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session)。
 
-可继续阅读：[Claude Code 文档](https://code.claude.com/docs/en/overview)、[Codex 开源代码](https://github.com/openai/codex/tree/main/codex-rs/core)、[OpenCode session 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session)。本章的 `RecoveryState` 是这些机制的最小教学版。
+**把恢复状态收进显式对象、给每条故障路径设好熔断上限，Agent 才敢在真实网络里长时间自动运行。**
 
-## 一句话总结
+## 本地运行与测试
 
-`s11` 先给失败分类，再选择重试、续写、压缩或停止。
+交互运行（从仓库根目录执行）：
 
-## 与 s10 的关键代码 diff（不含 helper.js）
+```bash
+cd code-agent-course && node s11-error-recovery.js
+```
 
-下面只展示错误恢复新增的状态、重试器和主循环接入点。
+离线单测（在仓库根目录执行，无需 API Token）：
 
-```diff
---- s10-system-prompt.js
-+++ s11-error-recovery.js
-+const DEFAULT_MAX_TOKENS = 8000;
-+const ESCALATED_MAX_TOKENS = 64000;
-+const MAX_RECOVERY_RETRIES = 3; // 续写次数上限
-+const MAX_RETRIES = 10; // 瞬态错误退避次数上限
-+const BASE_DELAY_MS = 500;
-+const MAX_CONSECUTIVE_529 = 3; // 连续过载达到此数 → 切换备用模型
-+const CONTINUATION_PROMPT =
-+  "Output token limit hit. Resume directly — no apology, no recap. Pick up mid-thought.";
-+
-+export class RecoveryState {
-+  constructor() {
-+    this.escalated = false; // 是否已把 max_tokens 升到 64K
-+    this.recoveryCount = 0; // 已续写次数
-+    this.consecutive529 = 0; // 连续 529 次数
-+    this.attemptedReactiveCompact = false; // 是否已应急压缩过
-+    this.currentModel = null; // null = provider 默认模型；切换后 = 备用模型
-+  }
-+}
-
-+export async function withRetry(fn, state) {
-+  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
-+    try {
-+      const result = await fn();
-+      state.consecutive529 = 0;
-+      return result;
-+    } catch (error) {
-+      const msg = String(error.message);
-+      if (isOverloaded(msg)) {
-+        state.consecutive529 += 1;
-+        const fallback = process.env.FALLBACK_MODEL_ID;
-+        if (state.consecutive529 >= MAX_CONSECUTIVE_529 && fallback) {
-+          state.currentModel = fallback;
-+          state.consecutive529 = 0;
-+          console.log(`[529 x${MAX_CONSECUTIVE_529}] switching to ${fallback}`);
-+        }
-+        await sleep(retryDelay(attempt));
-+        continue;
-+      }
-+      if (isRateLimit(msg)) {
-+        await sleep(retryDelay(attempt));
-+        continue;
-+      }
-+      throw error; // 非瞬态 → 交给外层 try/catch
-+    }
-+  }
-+  throw new Error(`Max retries (${MAX_RETRIES}) exceeded`);
-+}
-
--  let reactiveRetries = 0;
-+  const state = new RecoveryState(); // s11：跟踪截断升级 / 压缩 / 529 / 模型切换
-+  let maxTokens = DEFAULT_MAX_TOKENS; // s11：输出截断时升级到 64K
-
--    let message;
-+    let choice;
-
-+    const message = choice.message;
-+
-+    if (choice.finish_reason === "length") {
-+      if (!state.escalated) {
-+        maxTokens = ESCALATED_MAX_TOKENS;
-+        state.escalated = true;
-+        continue;
-+      }
-+      messages.push(message);
-+      if (state.recoveryCount < MAX_RECOVERY_RETRIES) {
-+        messages.push({ role: "user", content: CONTINUATION_PROMPT });
-+        state.recoveryCount += 1;
-+        continue;
-+      }
-+      return message.content || "";
-+    }
+```bash
+pnpm vitest run code-agent-course/s11-error-recovery.test.js
 ```
 
 ## 博客代码演进
 
-下面 8 个 patch 专门用于博客右侧的代码切换。第一步基于 `s10-system-prompt.js`，后面的每一步都继续修改上一帧，最后必须得到完整的 `s11-error-recovery.js`。
+### 1. 用一个对象集中记录恢复状态
 
-每一步的代码都可以运行。前三步写出“失败后等一等再试”的重试函数，第 4 步把它接进 loop；之后每一步增加一种出错后的处理办法。日志放在最后一步统一补上。
-
-### 1. 用一个对象记录恢复进度
-
-出错后要不要再试、试过几次、用过哪些办法，这些信息需要在循环的多轮之间保存。`RecoveryState` 把它们集中放在一个对象里：是否已经提高过输出上限、已经续写了几次、连续遇到几次服务器过载、是否已经做过应急压缩、当前用的是哪个模型。每次用户提问会新建一个，所以这些计数只在一次提问内有效。这一步只是定义，还没有用到。
+出错后要不要重试、已经续写了几次、连续遇到多少次过载、当前切到哪个模型，这些信息要在多轮循环之间保持。`RecoveryState` 把它们统一收在一个对象里，每次用户提问新建一份，作用域清晰可控。这一步只先定义类，暂未接进循环。
 
 ```diff agent-step
 @@
@@ -300,9 +97,9 @@ Retry-After: 10
    identity: () =>
 ```
 
-### 2. 失败后等多久再试
+### 2. 计算退避等待时间并留好测试入口
 
-遇到限流或服务器繁忙，马上重试多半还是失败，应该等一会儿。`retryDelay` 计算等待时间：第一次 0.5 秒，之后每次翻倍，最长 32 秒，这叫指数退避。再加上最多 25% 的随机量，避免很多客户端在同一时刻一起重试。如果服务器明确告诉了要等多久，就按服务器说的来。`sleep` 负责真正等待，`setSleepFn` 让测试可以把它换成不等待的版本。
+撞上限流或服务繁忙时，立刻重发往往继续撞墙。`retryDelay` 实现指数退避：首次 0.5 秒，每次翻倍，最高封顶 32 秒，再叠 0% 到 25% 的随机抖动防止多个客户端同时重试；若传入服务端指定的 `retryAfter`（毫秒），则直接采用。`setSleepFn` 让单测能替换掉真实定时器，跑测试无需干等。
 
 ```diff agent-step
 @@
@@ -329,9 +126,9 @@ Retry-After: 10
  }
 ```
 
-### 3. withRetry：遇到限流就重试
+### 3. 写出 withRetry：先处理 429 限流
 
-`withRetry` 接收一个函数并执行它，成功就返回结果。失败时看错误信息：如果是 429 或“rate limit”这类限流错误，就等一会儿再执行一次，最多 10 次。其他错误不属于“等一等就会好”的情况，原样抛出，交给外层处理。它不关心函数里面做了什么，所以可以包住任何一次模型调用。
+`withRetry` 接收一个异步请求函数 `fn` 和状态对象 `state`：成功就清零连续 `529` 计数并返回结果；失败时若命中 `429` 或 `rate limit`，就退避等待后继续尝试，最多 10 次。其余非瞬态错误不做吞没，原样抛给外层循环决定怎么处理。
 
 ```diff agent-step
 @@
@@ -365,9 +162,9 @@ Retry-After: 10
  }
 ```
 
-### 4. 把模型调用包进 withRetry
+### 4. 把主循环里的模型调用包进 withRetry
 
-现在在 loop 里用上它。循环开始前新建一个 `RecoveryState`，调用模型的那一行用 `withRetry` 包起来。调用时多传两个参数：`model` 来自状态对象，目前是 `null`，表示用默认模型；`maxTokens` 是输出长度上限，默认 8000。另外，返回值改为保存整个 `choice`，因为后面要读其中的 `finish_reason` 来判断输出有没有被截断。从这一步起，偶尔的限流不会再让对话中断。
+现在把 `withRetry` 接进 `agentLoop`。循环开始前新建 `RecoveryState` 和默认 8000 的 `maxTokens`，调用 `callLlm` 时传入 `model: state.currentModel` 和 `maxTokens`。返回值也改成完整的 `choice`，方便后面读取 `choice.finish_reason`。从这一步起，偶发限流不会再打断对话。
 
 ```diff agent-step
 @@
@@ -412,9 +209,9 @@ Retry-After: 10
      if (!message.tool_calls?.length) {
 ```
 
-### 5. 上下文超限：压缩一次，不行就停
+### 5. 收口上下文超限与不可恢复错误
 
-s08 已经处理过“prompt too long”：应急压缩后重试。这里改用状态对象来记录，去掉原来单独的计数器，规则更明确：一次提问内只做一次应急压缩。同时改变最后的处理方式：遇到确实无法恢复的错误，不再抛出异常让整个程序退出，而是把错误信息作为这一轮的回答返回给用户，对话还可以继续。
+`s08` 里的应急压缩原本靠局部变量 `reactiveRetries` 计数，现在统一收进 `state.attemptedReactiveCompact`，明确每次提问只做一次应急压缩。同时改进兜底出口：遇到确实无法恢复的错误，不再直接抛异常把整个 CLI 进程炸掉，而是返回 `[Error] ...` 让对话体面继续。
 
 ```diff agent-step
 @@
@@ -450,9 +247,9 @@ s08 已经处理过“prompt too long”：应急压缩后重试。这里改用�
      }
 ```
 
-### 6. 服务器过载：换一个模型
+### 6. 服务器 529 过载：连续触发就切备用模型
 
-529 表示服务器过载，和限流一样需要等待后重试，但它可能持续很久。所以多做一件事：在状态里累计连续过载的次数，达到 3 次并且环境变量 `FALLBACK_MODEL_ID` 配置了备用模型，就把 `state.currentModel` 换成它。上一步已经把这个字段传给了 `callLlm`，所以下一次重试会自动使用备用模型。只要有一次调用成功，计数就清零。
+`529` 表示服务端过载，有时会持续几分钟。我们在 `withRetry` 里识别 `isOverloaded`，每次失败递增 `state.consecutive529`。如果连续 3 次过载且环境变量 `FALLBACK_MODEL_ID` 配了备用模型，就把 `state.currentModel` 切过去并重置计数，下一轮重试自动走备用模型；只要有一次请求成功，计数也会清零。
 
 ```diff agent-step
 @@
@@ -484,9 +281,9 @@ s08 已经处理过“prompt too long”：应急压缩后重试。这里改用�
          await sleep(retryDelay(attempt));
 ```
 
-### 7. 输出被截断：先加大上限，再接着写
+### 7. 输出被截断：先升上限，再续写
 
-模型的回答有长度上限，写到一半被截断时，`finish_reason` 是 `"length"`。分两步处理。第一次遇到：把上限从 8000 提高到 64000，原样重新请求一次。如果还是被截断：把已经写出的部分保存到 `messages`，再加一条消息让模型“直接接着写，不要道歉，不要重复”，最多续写 3 次。超过次数就把现有内容返回。三种恢复办法到这里都齐了，提示符改成 `s11 >> `。
+当 `choice.finish_reason === "length"` 时，说明模型没说完但输出额度用尽了。我们分两步救场：第一次先把 `maxTokens` 从 8000 提到 64000 原样重发（不保存残缺回答）；升过上限还被截断，才把已有文本存入 `messages`，追加 `CONTINUATION_PROMPT` 让模型接着写，最多续写 3 次。顺手把提示符切到 `s11 >> `。
 
 ```diff agent-step
 @@
@@ -532,7 +329,9 @@ s08 已经处理过“prompt too long”：应急压缩后重试。这里改用�
 
 ### 8. 补上恢复日志
 
-最后补两行日志。切换到备用模型时打印一行，说明连续过载了几次、换成了哪个模型；遇到无法恢复的错误时，用 `console.error` 打印原因。恢复过程大多是自动的，有了这两行，出问题时至少知道程序做了什么决定。
+最后补上两行关键日志：连续 `529` 切换备用模型时打印切换信息，遇到不可恢复错误时用 `console.error` 输出原因。恢复机制大多在后台自动触发，留出这两行日志，出问题时才能迅速看清程序做过什么决策。
+
+> **本章思考题**：到这里，单个会话里的 Agent 已经很抗造了。但回头看 `s05` 的 `todo_write`，那份清单只活在内存里，进程一退就消失，也描述不了“任务 B 必须等任务 A 完成后才能认领”的先后依赖。要让大型工程跨会话推进，怎么把计划持久化成一张带依赖的任务图？下一章 `s12` 我们来做 Task System。
 
 ```diff agent-step
 @@
@@ -547,4 +346,83 @@ s08 已经处理过“prompt too long”：应急压缩后重试。这里改用�
 +      console.error(`[unrecoverable] ${error.message}`);
        return `[Error] ${error.message}`;
      }
+```
+
+## 和上一步的关键代码 diff（不含 helper.js）
+
+```diff
+--- s10-system-prompt.js
++++ s11-error-recovery.js
+@@
++const DEFAULT_MAX_TOKENS = 8000;
++const ESCALATED_MAX_TOKENS = 64000;
++const MAX_RECOVERY_RETRIES = 3;
++const MAX_RETRIES = 10;
++const BASE_DELAY_MS = 500;
++const MAX_CONSECUTIVE_529 = 3;
++const CONTINUATION_PROMPT =
++  "Output token limit hit. Resume directly — no apology, no recap. Pick up mid-thought.";
++
++export class RecoveryState {
++  constructor() {
++    this.escalated = false;
++    this.recoveryCount = 0;
++    this.consecutive529 = 0;
++    this.attemptedReactiveCompact = false;
++    this.currentModel = null;
++  }
++}
++
++export async function withRetry(fn, state) {
++  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
++    try {
++      const result = await fn();
++      state.consecutive529 = 0;
++      return result;
++    } catch (error) {
++      const msg = String(error.message);
++      if (isOverloaded(msg)) {
++        state.consecutive529 += 1;
++        const fallback = process.env.FALLBACK_MODEL_ID;
++        if (state.consecutive529 >= MAX_CONSECUTIVE_529 && fallback) {
++          state.currentModel = fallback;
++          state.consecutive529 = 0;
++          console.log(`[529 x${MAX_CONSECUTIVE_529}] switching to ${fallback}`);
++        }
++        await sleep(retryDelay(attempt));
++        continue;
++      }
++      if (isRateLimit(msg)) {
++        await sleep(retryDelay(attempt));
++        continue;
++      }
++      throw error;
++    }
++  }
++  throw new Error(`Max retries (${MAX_RETRIES}) exceeded`);
++}
+@@
+-  let reactiveRetries = 0;
++  const state = new RecoveryState();
++  let maxTokens = DEFAULT_MAX_TOKENS;
+@@
+-    let message;
++    let choice;
+@@
++    const message = choice.message;
++
++    if (choice.finish_reason === "length") {
++      if (!state.escalated) {
++        maxTokens = ESCALATED_MAX_TOKENS;
++        state.escalated = true;
++        continue;
++      }
++      messages.push(message);
++      if (state.recoveryCount < MAX_RECOVERY_RETRIES) {
++        messages.push({ role: "user", content: CONTINUATION_PROMPT });
++        state.recoveryCount += 1;
++        continue;
++      }
++      return message.content || "";
++    }
 ```

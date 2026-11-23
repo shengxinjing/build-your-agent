@@ -500,7 +500,7 @@ s14 的定时调度建立在 s13 后台任务之上，原有 agent 能力仍在�
 
 ### 1. 整理开头：引入 cron 表达式的解析函数
 
-cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主线关系不大，所以放在 `helper.js` 里：`validateCron` 检查表达式是否合法，`cronMatches` 判断某个时间点是否符合表达式。这一步把它们引入进来。另外 `loadTask` 不再提前检查文件是否存在，`get_task` 改用 `try/catch` 处理找不到任务的情况。
+cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主线关系不大，所以放在 `helper.js` 里：`validateCron` 检查表达式是否合法，`cronMatches` 判断某个时间点是否符合表达式。这一步把它们引入进来。
 
 ```diff agent-step
 @@
@@ -510,41 +510,6 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
 +  validateCron,
    prepareHistoryForSummary,
  } from "./helper.js";
-@@
- }
- function loadTask(id) {
--  if (!existsSync(taskPath(id))) return null;
-   return JSON.parse(readFileSync(taskPath(id), "utf8"));
- }
-@@
- export function canStart(id) {
-   const task = loadTask(id);
--  if (!task) return false;
-   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
- }
-@@
- export function claimTask(id, owner = "agent") {
-   const task = loadTask(id);
--  if (!task) return `Error: Task ${id} not found`;
-   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
-   if (!canStart(id)) {
-@@
- export function completeTask(id) {
-   const task = loadTask(id);
--  if (!task) return `Error: Task ${id} not found`;
-   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
-   task.status = "completed";
-@@
- }
- function runGetTask({ task_id }) {
--  const task = loadTask(task_id);
--  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
-+  try {
-+    return JSON.stringify(loadTask(task_id), null, 2);
-+  } catch {
-+    return `Error: Task ${task_id} not found`;
-+  }
- }
 @@
  const SLOW_KEYWORDS = ["install", "build", "test", "deploy", "compile", "pytest", "make", "cargo"];
  const BACKGROUND_POLL_MS = 25;

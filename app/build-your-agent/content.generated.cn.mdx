@@ -4465,80 +4465,40 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s07：Skill Loading —— 知识按需加载
-新人不可能第一天就背完整本公司手册，更不该每次开会都把所有资料搬上桌。`s07` 教他先看目录，需要某项专业知识时再去翻对应手册，这样脑子里只装当下用得上的内容。
+## !!steps s07：Skill Loading - 先给技能目录，需要时再按需加载全文
+上一章 `s06` 用子代理把探索过程隔离开了，但项目里还有代码规范、发布流程、方案评审清单这类专业手册。如果把它们全塞进 `SYSTEM`，每轮对话都在烧 Token，而且大多数时候根本用不到。
 
-### 本章目标
+这一章我们给 Agent 加上两级技能加载。**技能系统的核心不是把知识全部预装进提示词，而是常驻一份轻量目录，模型真用得上时再调用 `load_skill` 取全文。**
 
-如果一开始把所有专业知识都塞进 system prompt，上下文会很快变大，而且很多知识根本用不上。
+### 问题
 
-`s07` 加入技能系统：system prompt 里只放技能目录，模型需要时再调用 `load_skill` 读取完整内容。
+团队经验一多，各类规范和指南动辄几千字。启动时一股脑塞进 `SYSTEM`，会持续挤压上下文窗口，也容易分散模型对当前任务的注意力。反过来，如果完全不放，模型根本不知道仓库里有这些指南，每次还得靠用户口头重复。
 
-### 新增能力
+### 解决方案
 
-本章沿用前面的 `todo_write` 和 `task`，只新增“技能按需加载”。
+我们把技能加载拆成“启动扫目录、运行时取全文”两级。程序启动时，`scanSkills()` 扫描 `skills/` 下的直接子目录，复用 `helper.js` 的 `parseFrontmatter()` 读出每个 `SKILL.md` 头部的 `name` 和 `description`，存入内存表 `skillRegistry`。
 
-- 扫描 `skills/` 目录。
-- 从 `SKILL.md` 读取 `name` 和 `description`。
-- system prompt 只展示技能列表。
-- `load_skill(name)` 按需返回完整技能文本。
-
-### 为什么这一步重要
-
-技能系统解决的是“知识不要预加载”的问题。
-
-目录常驻很便宜，全文按需加载才可控。后续 MCP、插件、团队能力，本质上也会用类似的“发现 -> 按需展开”模式。
-
-### 参考实现提醒
-
-Skill Loading 的重点是“两级加载”：
-
-- system prompt 里只放技能名和一句话描述，避免启动时塞满上下文。
-- 真的需要某个技能时，再通过 `load_skill` 把完整内容作为 tool result 注入。
-- 技能文件是知识数据，不是越权指令；真实系统还要防 prompt injection。
-
-### 新增函数速览
-
-- `scanSkills(dir)`：扫描 `skills/` 的直接子目录，读取其中的 `SKILL.md` frontmatter 和正文。
-- `listSkills()`：把已发现的 skill 压成一段简短清单，注入 system prompt 让模型知道有哪些技能。
-- `loadSkill({ name })`：按名称读取某个 skill 的完整内容，并通过工具结果按需交给模型。
-- `agentLoop(messages, confirm)`：在 s06 基础上多暴露一个 `load_skill` 工具。
-
-### 流程图
+`SYSTEM` 里只拼入 `listSkills()` 生成的简短清单。模型判断需要某个技能时，再调用普通工具 `load_skill(name)`，把完整正文作为工具结果注入对话：
 
 ```mermaid
 flowchart TD
-  SC["启动时 listSkills()<br/>扫描 skills/ 目录，取每个技能的简介"] --> SYS["SYSTEM 提示词<br/>带上技能目录，每轮都发"]
+  SC["启动时 scanSkills()<br/>扫描 skills/*/SKILL.md 建表"] --> SYS["SYSTEM 提示词<br/>只带 listSkills() 轻量目录"]
   SYS --> L
   M["messages"] --> L["LLM"]
   L --> Q{"有 tool_calls 吗？"}
   Q -->|没有| R["返回结果"]
   Q -->|有| PRE["triggerHooks PreToolUse"]
-  PRE --> H["handlers<br/>bash · read · write · edit · glob · todo · task"]
-  PRE --> LS["load_skill(name)<br/>运行时按需读取完整 SKILL.md"]
+  PRE --> H["常规 handlers<br/>bash · read · write · edit · glob · todo · task"]
+  PRE --> LS["load_skill(name)<br/>查 skillRegistry 取完整正文"]
   H -->|结果追加到 messages| M
   LS -->|技能全文作为工具结果| M
 ```
-```text
-启动时
-  |
-  v
-扫描 skills/
-  |
-  v
-system prompt 只放目录
-  |
-  | 需要某个技能
-  v
-tool_call: load_skill(name)
-  |
-  v
-完整技能内容作为 tool_result 回到模型
-```
+
+这样设计同时兼顾成本和安全：目录每个技能只占一行，常驻上下文非常便宜；`loadSkill` 只拿名字去查启动时建好的 `skillRegistry`，不拿模型参数拼路径，避免了路径穿越读取任意文件。同时要注意，技能正文属于外部知识数据，真实生产系统仍要防范内容里的 prompt injection。
 
 ---
 
-技能就是放在 `skills/` 目录下的 Markdown 文件，所以先引入读目录、读文件要用的 Node.js 内置函数，以及 `helper.js` 里解析文件头部信息的 `parseFrontmatter`。`SKILLS_DIR` 指向当前目录下的 `skills/`。这一步只做准备，行为不变。
+技能本质上是放在 `skills/` 目录下的 Markdown 文件。我们先从 `node:fs` 和 `node:path` 引入目录和文件读取函数，并从 `helper.js` 引入负责解析文件头部元信息的 `parseFrontmatter`，再定好 `SKILLS_DIR` 路径。这一步只做准备，程序行为还没有变化。
 
 本次代码变化：5 行。
 
@@ -4758,7 +4718,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`scanSkills` 遍历 `skills/` 下的每个子目录，找到里面的 `SKILL.md`，从文件头部读出名字和描述，连同全文一起放进一张表。表的键是技能名。目录不存在或者没有 `SKILL.md` 就跳过，不报错。程序启动时执行一次，结果保存在 `skillRegistry` 里。之后所有和技能有关的操作都查这张表，不再碰文件系统。
+`scanSkills` 遍历 `skills/` 下的直接子目录，找到里面的 `SKILL.md`，用 `parseFrontmatter` 解析头部的名字和描述，连同原文一起放进一张按名字索引的对象表。目录不存在或缺少 `SKILL.md` 时直接跳过，不报错。程序启动时调用一次存进 `skillRegistry`，后面所有技能查询都直接读内存表。
 
 本次代码变化：17 行。
 
@@ -4991,7 +4951,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`listSkills` 把每个技能变成一行“名字: 描述”。系统提示词改成多行，把这份目录放进去，并告诉模型：需要时用 `load_skill` 取完整内容。目录每一轮都会发给模型，但每个技能只占一行，很便宜。模型从此知道有哪些技能可用，只是还看不到正文。
+`listSkills` 把内存表里的每个技能压缩成一行“名字: 描述”。我们把 `SYSTEM` 展开成多行模板，拼入这份目录，并告诉模型需要时用 `load_skill` 取完整正文。目录每轮都会发给模型，但体量极小，模型从此知道仓库里有哪些技能可用。
 
 本次代码变化：12 行。
 
@@ -5234,7 +5194,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`loadSkill` 按名字到 `skillRegistry` 里取出完整的 `SKILL.md`，找不到就返回一句提示。它只查表，不拿模型给的名字去拼文件路径，所以模型没办法借它读到别的文件。然后照老办法接入：`tools` 加 schema，`handlers` 加一行。子代理的排除名单里也加上 `load_skill`。主循环一行没改。
+`loadSkill` 按名字从 `skillRegistry` 取出完整的 `SKILL.md`，查不到就返回提示文案。因为它只查内存表、不拼磁盘路径，模型无法借此读取越权文件。接着按老办法一口气接齐：`tools` 加 schema，`handlers` 登记 `load_skill`，`SUB_EXCLUDE` 也顺手排除它。注意主循环 `agentLoop` 一行都没改。
 
 本次代码变化：13 行。
 
@@ -5494,27 +5454,29 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后把导出 `spawnSubagent` 的那一行挪到子代理代码后面，提示符改成 `s07 >> `。这一步不改变行为。回头看整章：`agentLoop` 完全没动，技能只是多了一段启动时的扫描和一个普通工具。
+最后把 `export { spawnSubagent }` 挪到子代理定义紧后面，顺手把交互提示符切到 `s07 >> `。回顾整章改动，主循环 `agentLoop` 纹丝未动，技能系统只是启动时的一次目录扫描外加一把普通工具。
 
 本次代码变化：6 行。
 
 ### 测试 Prompt
 
 ```text
-先查看当前有哪些可用技能，如果有适合仓库检查的技能，就加载它并用它检查 README。
+先看看你有哪些可用技能；如果有适合帮我推敲和挑刺方案的技能，就加载它，然后针对“给博客加全文搜索”这个计划提出第一个问题。
 ```
 
-观察重点：模型应该先从 skills catalog 判断是否需要技能，再调用 `load_skill` 读取完整内容。
+仓库里自带示例技能 `code-agent-course/skills/grilling/SKILL.md`。运行后能看到模型先根据 `SYSTEM` 里的目录识别出 `grilling`，再调用 `load_skill` 取出全文，并按照技能要求一次只提一个关键设计问题。
 
-### 扩展阅读：商业级 Agent 怎么做技能和插件
+### 扩展阅读：商业级 Agent 怎么做技能加载
 
-技能系统的本质是“能力发现”和“按需加载”，不是把所有知识一开始塞进 system prompt：
+商业级产品对技能、规则和插件的处理，本质上都遵循“先发现、再按需展开”的两级模式：
 
-- Claude Code：启动时先让模型看到 skill 的描述，只在实际使用时加载正文，这与本章的两级加载直接对应。参考 [Claude Code Skills](https://code.claude.com/docs/en/slash-commands)。
-- Codex：`SKILL.md` 的 `name` 和 `description` 用于发现与触发，正文只在 skill 触发后加载。参考 [Codex Skill Creator](https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/skill-creator/SKILL.md)。
-- opencode：扫描 `.opencode/skills/`、`.claude/skills/` 和 `.agents/skills/`，再由原生 `skill` 工具按需返回完整内容。参考 [OpenCode Agent Skills](https://opencode.ai/docs/skills)。
+- **Claude Code**：启动时只向模型展示各 skill 的名称与简短描述，命中任务后才加载正文，和本章结构直接对应。参考 [Claude Code Skills](https://code.claude.com/docs/en/slash-commands)。
+- **Codex**：通过 `SKILL.md` 的 `name` 和 `description` 做发现与触发，真正使用时才把正文装入上下文。参考 [Codex Skill Creator](https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/skill-creator/SKILL.md)。
+- **opencode**：扫描 `.opencode/skills/`、`.claude/skills/` 和 `.agents/skills/` 汇总清单，再由原生 `skill` 工具按需返回完整正文。参考 [OpenCode Agent Skills](https://opencode.ai/docs/skills)。
 
-本章只做最小版：`scanSkills()` 先给模型一个目录，`load_skill` 再把完整技能内容作为 tool result 注入。
+**把“目录”和“正文”拆成两级，是控制上下文膨胀最稳妥的知识挂载方式。**
+
+> **本章思考题**：现在专业知识不会一开始就塞满提示词了，但只要对话一长，模型反复读文件、跑命令、看报错，`messages` 还是会越滚越大直到超限。如果不靠重开会话，怎么在尽量不丢关键线索的前提下给长对话瘦身？下一章 `s08` 我们来做 Context Compact。
 
 ```js ! agent.js range=155:244
 import { readdirSync, readFileSync, existsSync } from "node:fs";
@@ -5767,58 +5729,25 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s08：Context Compact —— 给长会话腾空间
-新人连续工作几个小时后，桌面会堆满便签、日志和临时资料。`s08` 教他整理桌面：重要结论留下，超长输出保存到文件，旧过程压缩成摘要，让后面的工作还能继续。
+## !!steps s08：Context Compact - 给长会话分层瘦身，腾出上下文空间
+上一章 `s07` 解决了专业知识不要预加载的问题，但只要任务一长，模型反复读文件、跑测试、看报错，`messages` 依然会像滚雪球一样膨胀，直到撞上模型的上下文上限直接报错。
 
-### 本章目标
+这一章我们给 Agent 装上一套分层压缩流水线。**上下文压缩不是粗暴删历史，而是按成本从低到高逐层瘦身：先用零 API 成本的规则减重，实在装不下时再请模型写摘要。**
 
-agent 一直跑，`messages` 一定会越来越长。上下文满了以后，不处理就会失败。
+### 问题
 
-`s08` 加入分层压缩流程：先用不调用模型的简单规则缩短历史，再必要时让模型总结旧历史。
+长会话里，`messages` 最占空间的是几十 KB 的工具输出和几十轮前的探索过程。什么都不做，对话很快会触发“prompt too long”直接失败；如果每轮都调模型总结，既烧钱又拖慢节奏，还容易把刚做到一半的细节总结丢。
 
-### 新增能力
+### 解决方案
 
-本章沿用前面的计划、子代理和技能加载，只新增上下文压缩。
-
-- `toolResultBudget`：如果工具结果太大，就把完整内容写入文件，并在 `messages` 里只保留文件路径和预览。
-- `snipCompact`：消息太多时省略中间较旧的部分。
-- `microCompact`：较早的工具结果缩成一句简短说明。
-- `compact` 工具：模型可主动请求压缩。
-- 应急压缩：API 报上下文过长时，先总结旧历史再重试。
-
-### 为什么这一步重要
-
-压缩不是删除历史，而是保住“下一步需要的连续性”。
-
-不调用模型的简单规则先跑，LLM 摘要后跑。这样可以减少模型输入长度，也让长会话不容易失败。
-
-### 参考实现提醒
-
-压缩不是一次性“总结一下”，而是一组分层策略：
-
-- 大工具结果优先写入文件保存，`messages` 里只留下文件路径和一小段预览，避免上下文变得过大。
-- 旧消息可以省略或总结，但当前任务、最新计划和未完成状态要保留。
-- API 报上下文太长时，要先做应急压缩再重试，而不是直接放弃会话。
-- 本教程把 `CONTEXT_LIMIT` 设成 `12000`，方便在命令行里观察自动压缩；真实项目可以按模型上下文窗口调大。
-- 本章的 `estimateSize()` 和 `toolResultBudget()` 使用 JavaScript 字符串长度做近似，不是真实 byte 或 token；生产系统应使用模型 tokenizer 或 Provider 返回的 usage。
-- 摘要输入超过 80,000 字符时，`prepareHistoryForSummary()` 会保留稳定头部和最新尾部。只保留最旧前缀会丢掉当前任务，只保留最新尾部又可能丢掉用户最初的硬约束。
-
-### 新增函数速览
-
-- `snipCompact(messages)`：删除中间的旧消息，只保留开头和最近对话。
-- `microCompact(messages)`：压短较早的 tool result，保留“这个工具曾经跑过”的线索。
-- `toolResultBudget(messages)`：当工具输出太大时，把完整内容写入文件，只在上下文里保留文件路径和预览。
-- `compactHistory(messages)`：调用模型总结历史，把长对话压成一条可继续工作的摘要。
-- `reactiveCompact(messages)`：当模型提示上下文过长时，立即触发一次总结式压缩。
-
-### 流程图
+我们在每次调用 LLM 前按“便宜先跑、贵的后跑”串起四层压缩，并在 API 真报超限时留一条应急路径，同时给模型一把主动压缩的 `compact` 工具：
 
 ```mermaid
 flowchart TD
   M["messages"] --> P
   subgraph PIPE["压缩流程：每次调用 LLM 前"]
     P["① 每轮自动，不调 API<br/>toolResultBudget → snipCompact → microCompact"] --> Q{"仍然超过阈值？"}
-    Q -->|是| AC["② 自动压缩 compactHistory<br/>调一次 LLM 总结旧历史"]
+    Q -->|是| AC["② 自动压缩 compactHistory<br/>写记录并调 LLM 总结旧历史"]
   end
   Q -->|否| L["LLM"]
   AC --> L
@@ -5826,21 +5755,41 @@ flowchart TD
   T -->|没有| R["返回结果"]
   T -->|有| H["handlers<br/>bash · read · write · task · load_skill · compact"]
   H -->|工具结果追加到 messages，下一轮再压缩| M
-  L -->|③ API 报上下文过长| RC["应急压缩 reactiveCompact 后重试"]
+  L -->|③ API 报上下文过长| RC["应急压缩 reactiveCompact 后重试（最多 1 次）"]
   RC --> L
 ```
+
+五种手段各司其职，且都通过 `apply()` 原地改写 `messages`：
+
+| 机制 | 触发条件 | 核心动作 |
+|---|---|---|
+| `toolResultBudget`（L3） | 尾部工具结果总长超 200,000 | 超过 30,000 字符的结果落盘到 `.task_outputs/tool-results/`，只留路径与前 2,000 字符预览 |
+| `snipCompact`（L1） | 消息超过 50 条 | 保留开头 3 条和最近一批，省略中间段，并避开孤立的 `tool` 结果 |
+| `microCompact`（L2） | 工具结果超过 3 条 | 保留最近 3 条全文，更早且超 120 字符的结果换成一句占位提示 |
+| `compactHistory`（L4） | 估算超 `CONTEXT_LIMIT` 或调用 `compact` | 全量写入 `.transcripts/`，再请模型总结成一条 `[Compacted]` 摘要 |
+| `reactiveCompact`（应急） | API 报上下文过长 | 写入 `.transcripts/`，总结早期历史并保留最近几条消息后重试（限 1 次） |
+
+说明两点教学边界。为了方便在终端观察自动压缩，本章把 `CONTEXT_LIMIT` 设为 `12000`，并用 JSON 字符串长度做近似估算（生产系统应改用 tokenizer 或接口返回的 usage）。摘要输入超过 80,000 字符时，`helper.js` 里的 `prepareHistoryForSummary()` 会同时保留稳定头部和最新尾部，避免丢掉初始约束或当前进度。
+
+### 流程图
+
+四层规则与应急路径的协作顺序：
+
 ```mermaid
 flowchart TD
   subgraph PRE["预处理：每轮自动，不调 API"]
-    L3["toolResultBudget<br/>工具结果太大 → 完整内容写文件，只留预览"] --> L1["snipCompact<br/>消息太多 → 省略中间，保留头尾"] --> L2["microCompact<br/>旧工具结果 → 一句占位说明，保留最近几条"]
+    L3["toolResultBudget<br/>超大工具结果写文件，只留预览"] --> L1["snipCompact<br/>消息太多则省略中间，保留头尾"] --> L2["microCompact<br/>旧工具结果换占位，保留最近 3 条"]
   end
   L2 --> Q{"仍然超过阈值？"}
   Q -->|否| OK["正常调用 LLM"]
   Q -->|是| L4["自动压缩 compactHistory<br/>LLM 总结旧历史（1 次 API）"]
   L4 --> OK
-  OK -->|API 仍报上下文过长| RE["应急压缩 reactiveCompact<br/>更激进地裁剪后重试"]
-  RE -.-> NOTE["原则：便宜的先跑，贵的后跑<br/>能改文本就不删整条，能删整条就不调 LLM"]
+  OK -->|API 仍报上下文过长| RE["应急压缩 reactiveCompact<br/>总结早期历史并保留尾部后重试"]
+  RE -.-> NOTE["原则：便宜的先跑，贵的后跑<br/>能落盘就不删，能删旧就不调 LLM"]
 ```
+
+`toolResultBudget` 如何把超大工具结果挪到磁盘（`<persisted-output>` 是给模型看的结构标记）：
+
 ```mermaid
 flowchart TD
   subgraph BEFORE["压缩前：合计 510KB，超预算"]
@@ -5856,6 +5805,9 @@ flowchart TD
   S --> A1 & A2
   A1 & A2 --> N["信息没丢：磁盘保留完整数据，不调用 API"]
 ```
+
+`microCompact` 如何收起较早的工具结果，只留最近 3 条全文：
+
 ```mermaid
 flowchart LR
   subgraph BEFORE["压缩前：10 条完整结果"]
@@ -5873,36 +5825,20 @@ flowchart LR
   end
   S --> AFTER
 ```
+
+`compactHistory` 执行 LLM 摘要的三步法：
+
 ```mermaid
 flowchart TD
   T{"前面几步跑完<br/>大小仍超阈值？"} -->|是| S1
-  S1["步骤 1：保存完整对话记录<br/>写入 .transcripts/，信息移出上下文但不丢失"] --> S2["步骤 2：LLM 生成摘要<br/>保留目标、文件、错误、待办、下一步"]
-  S2 --> S3["步骤 3：替换消息列表<br/>约 180 条旧消息 → 1 条摘要"]
-  FUSE["熔断保护：连续失败达到上限就停止重试"] -.-> S2
-```
-```text
-messages 变大
-    |
-    v
-大工具结果写入文件保存
-    |
-    v
-省略中间较旧消息
-    |
-    v
-旧工具结果缩成一句说明
-    |
-    v
-仍然太大？
-    |
-    +-- 否 --> 调 LLM
-    |
-    +-- 是 --> 摘要旧历史 --> 调 LLM
+  S1["步骤 1：保存完整对话记录<br/>写入 .transcripts/，信息移出上下文但不丢失"] --> S2["步骤 2：LLM 生成摘要<br/>保留目标、决定、文件、待办、约束"]
+  S2 --> S3["步骤 3：替换消息列表<br/>整段旧历史 → 1 条 [Compacted] 摘要"]
+  NOTE2["输入超 80,000 字符时<br/>prepareHistoryForSummary 同时保留首尾"] -.-> S2
 ```
 
 ---
 
-压缩时要把内容保存到磁盘，所以从 `node:fs` 多引入 `mkdirSync` 和 `writeFileSync`，再从 `helper.js` 引入 `prepareHistoryForSummary`，它负责把一段对话整理成适合交给模型做摘要的文本。这一步行为不变。
+压缩时要把大输出和历史记录写到磁盘，所以先从 `node:fs` 补引 `mkdirSync` 和 `writeFileSync`，再从 `helper.js` 引入 `prepareHistoryForSummary`，它负责把过长的历史整理成首尾兼顾的摘要输入。这一步只做准备，行为不变。
 
 本次代码变化：3 行。
 
@@ -6159,7 +6095,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-要压缩，先得知道现在有多大。`estimateSize` 用最粗的办法：把 `messages` 转成 JSON 字符串，数字符数。`CONTEXT_LIMIT` 是触发压缩的门槛，教程里故意设得很低，方便你在命令行里看到压缩发生。`isToolResult` 判断一条消息是不是工具结果。`apply` 把压缩后的内容写回原来的数组，而不是换一个新数组，这样 loop 外面拿着这个数组的代码也能看到变化。
+想做压缩，先要有尺子。`estimateSize` 用最直接的办法：把 `messages` 序列化成 JSON 字符串数字符数。`CONTEXT_LIMIT` 故意调低到 `12000`，方便在本地终端触发观察。`apply` 用 `splice` 原地替换数组内容，保证循环外持有 `messages` 引用的调用方也能看到最新历史。
 
 本次代码变化：11 行。
 
@@ -6425,7 +6361,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`snipCompact` 处理“条数太多”的情况：超过 50 条时，保留开头 3 条和最近的一批，中间换成一句“省略了多少条”。两个 `while` 是为了不把一次工具调用和它的结果拆开：工具结果必须跟在发起调用的那条 assistant 消息后面，否则 API 会报错。写好后在 loop 里、调用模型之前接上。这一层不调用模型，不花钱。
+`snipCompact` 处理“条数太多”的问题：超过 50 条时保留开头 3 条和最近一批，中间换成一句省略提示。两个 `while` 很关键，它们保证切点不会拆开一次工具调用和它的返回结果，否则模型接口会报格式错。写完直接挂到 `agentLoop` 调用模型前，零 API 成本。
 
 本次代码变化：16 行。
 
@@ -6709,7 +6645,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-上下文里最占地方的通常是工具结果，而模型一般只需要最近几条。`microCompact` 保留最近 3 条工具结果的全文，更早的如果超过 120 个字符，就换成一句“较早的结果已压缩，需要可以重新执行”。消息条数不变，只是内容变短，所以不会破坏对话结构。
+对话里最占地方的往往是工具输出，而模型通常只关心最近几次结果。`microCompact` 保留最近 3 条工具结果的全文，更早且超过 120 字符的内容全部换成一句占位提示。消息条数和角色配对不变，只是把旧内容收短。
 
 本次代码变化：11 行。
 
@@ -7006,7 +6942,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-有时一条工具结果就有几万个字符。`toolResultBudget` 看最近一批工具结果的总大小，超过预算时，从最大的那条开始，调用 `persistLargeOutput` 把全文写到 `.task_outputs/tool-results/` 下的文件里，上下文中只留文件路径和前 2000 个字符的预览。模型需要全文时，可以自己用 `read_file` 去读。这一层在 loop 里排在最前面，先把最大的块拿掉。
+有时单条工具输出就有几万字符。`toolResultBudget` 检查最近一批连续工具结果的总长度，超过预算时从最大的一条开始调用 `persistLargeOutput` 写入 `.task_outputs/tool-results/`，上下文里只留文件路径和前 2000 字符预览。模型真要看全文时，自己调 `read_file` 就行。在循环里把它排在最前，先把大块头挪走。
 
 本次代码变化：27 行。
 
@@ -7332,7 +7268,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-前三层都是简单规则，不调用模型。如果处理完还是超过 `CONTEXT_LIMIT`，就用最后一招 `compactHistory`：先把完整对话保存到 `.transcripts/` 下的文件里，方便以后查，再调用一次模型，让它把目标、已做的决定、读过改过的文件、剩余工作总结出来，然后用一条以 `[Compacted]` 开头的消息替换整段历史。这一步要多花一次 API 调用，所以放在最后。
+前三层都不花 API 费用。如果跑完仍然超过 `CONTEXT_LIMIT`，再启动 `compactHistory`：先把完整对话存成 JSONL 放进 `.transcripts/` 留档，再调一次模型提炼当前目标、关键决定、涉及文件、剩余工作和用户约束，用一条 `[Compacted]` 消息替换整段历史。
 
 本次代码变化：28 行。
 
@@ -7684,7 +7620,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-估算毕竟是粗略的，有时发出去才被 API 拒绝，报“prompt too long”。把调用模型包进 `try/catch`：如果错误属于这一类，就用 `reactiveCompact` 做一次更狠的压缩，只保留最后几条消息，前面的全部总结成一段，然后重试。`MAX_REACTIVE_RETRIES` 限制只重试一次，避免反复失败时死循环。其他错误照常抛出。
+字符数估算只是近似，有时请求发出去才被接口拒收，报“prompt too long”。我们把 `callLlm` 包进 `try/catch`：命中超限错误时，用 `reactiveCompact` 把前面的历史总结成 `[Reactive compact]` 并保留最后几条消息，然后重跑本轮。`MAX_REACTIVE_RETRIES = 1` 保证最多兜底一次，避免无限循环。
 
 本次代码变化：26 行。
 
@@ -8062,7 +7998,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后加一个 `compact` 工具，模型觉得上下文太乱时可以主动调用。它不放进 `handlers`，因为它要替换整段历史，这件事只有 loop 能做：遇到 `compact` 就执行 `compactHistory`，丢掉这一批里剩下的工具调用，用压缩后的上下文重新开始一轮。系统提示词补一句说明，子代理的排除名单里也加上它。
+再加一个 `compact` 工具，让模型在觉得历史太长时主动整理上下文。它不放进 `handlers`，因为压缩要替换整份 `messages`，必须由主循环接管：收到 `compact` 调用就执行 `compactHistory`，跳过本批剩余工具调用，立刻用摘要进入下一轮。顺手更新 `SYSTEM`、`SUB_EXCLUDE` 和 `s08 >> ` 提示符。
 
 本次代码变化：19 行。
 
@@ -8459,7 +8395,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-压缩是悄悄发生的，不打印就看不出来。最后给三种“调用模型做摘要”的时机各加一行日志：`[auto compact]` 是超过门槛自动触发，`[reactive compact]` 是 API 拒绝后的应急，`[manual compact]` 是模型主动调用工具。运行时看到哪一行，就知道是哪条路径在起作用。
+压缩默认悄悄发生，不打印就看不出走的是哪条分支。最后给三种触发模型摘要的入口各补一行日志：`[auto compact]` 对应超阈值自动压缩，`[reactive compact]` 对应超限应急压缩，`[manual compact]` 对应模型主动调用。运行时一眼就能看到是哪一档在工作。
 
 本次代码变化：3 行。
 
@@ -8468,41 +8404,30 @@ if (isMainModule(import.meta.url)) {
 在同一个 CLI 会话里依次输入下面三条 Prompt：
 
 ```text
-读取 code-agent-course/helper.js 的前 200 行，然后主动 compact，再总结你仍然记得哪些关键信息。
+读取 helper.js 的前 200 行，然后主动 compact，再总结你仍然记得哪些关键信息。
+```
 
-
+```text
 不要调用任何工具。请输出一段很长的中文说明，主题是“agent loop 为什么需要上下文压缩”，至少 9000 个汉字，分成 30 段，每段都以 MEMORY_BLOCK 开头，最后写 LONG_CONTEXT_DONE。
+```
 
+```text
 不要调用 bash。请告诉我：你是否还能记得上一轮的主题，以及当前对话为什么需要上下文压缩。
 ```
 
-观察重点：大工具结果进入消息后，压缩逻辑应该保留后续回答需要的工作记忆。
+第一条会触发 `[manual compact] compactHistory`，第二条输出后下一轮会触发 `[auto compact] compactHistory`，同时 `.transcripts/` 下会留下完整 JSONL 对话记录，而第三条里模型依然能接着回答核心问题。
 
 ### 扩展阅读：商业级 Agent 怎么做上下文压缩
 
-下面只整理公开文档和开源代码能确认的部分。商业产品的完整内部实现不一定公开，所以这里不猜细节，只看它们暴露出来的设计信号。
+从公开文档和开源代码看，成熟产品的上下文压缩会收敛到同一套原则：自动与手动并存、先剪大工具输出、再摘要旧历史，同时提前给压缩留出缓冲空间。
 
-真正成熟的上下文压缩，通常不是一个 `summarize(messages)` 函数，而是一套运行时能力：
+- **Claude Code**：默认开启 `autoCompactEnabled`，也支持 `/compact` 手动触发，并提供 `PreCompact` / `PostCompact` Hook（入参标明 `auto` 或 `manual`），把压缩当成可观测、可审计的生命周期事件。参考 [Claude Code settings](https://code.claude.com/docs/en/settings) 与 [Claude Code hooks](https://code.claude.com/docs/en/hooks)。
+- **Codex**：提供 `/compact` 命令，并通过 `model_auto_compact_token_limit` 和 `model_context_window` 把压缩阈值与模型窗口绑定成配置，而不是写死常量。参考 [Codex slash commands](https://developers.openai.com/codex/cli/slash-commands) 与 [Codex config reference](https://developers.openai.com/codex/config-reference)。
+- **opencode**：用 `compaction.auto`、`compaction.prune`、`compaction.reserved` 三项分别控制自动压缩、清理旧工具输出和预留压缩空间，避免窗口彻底塞满时连摘要请求都塞不进去。参考 [opencode compaction config](https://opencode.ai/docs/config/) 与 [opencode compaction source](https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/compaction.ts)。
 
-| Agent | 公开能看到的做法 | 对应本章代码 |
-| --- | --- | --- |
-| Claude Code | 自动 compact、手动 `/compact`、`PreCompact` / `PostCompact` hook | `CONTEXT_LIMIT`、`compact` 工具、`compactHistory()` |
-| Codex | `/compact` 手动压缩，配置里有自动压缩 token 阈值和模型上下文窗口 | `CONTEXT_LIMIT = 12000` |
-| opencode | `compaction.auto`、`compaction.prune`、`compaction.reserved` | `toolResultBudget()`、`microCompact()`、预留空间可后续补 |
+**把上下文当成受限内存来分层管理，长会话才能稳稳跑完全程。**
 
-### Claude Code：把 compact 放进生命周期
-
-Claude Code 的 `autoCompactEnabled` 默认开启，表示上下文接近上限时会自动压缩；用户也可以通过 `/compact` 手动触发。更重要的是，它有 `PreCompact` 和 `PostCompact` hook，而且 hook 输入里会标明触发来源是 `manual` 还是 `auto`。
-
-这说明在真实产品里，compact 不只是“把旧消息总结一下”。它是一个生命周期事件：压缩前可以记录、拦截、保存现场；压缩后可以刷新状态、写日志、做审计。
-
-本章还没有做 hook，但 `compact` 工具、`compactHistory()` 和 `writeTranscript()` 已经是这条路的最小版本。
-
-参考：[Claude Code settings](https://code.claude.com/docs/en/settings)、[Claude Code hooks](https://code.claude.com/docs/en/hooks)
-
-### Codex：把窗口和阈值变成配置
-
-Codex CLI 文档里，`/compact` 会把早期对话替换成简洁摘要，从而释放上下文。配置项里还有 `model_auto_compact_token_limit`，表示触发自……
+> **本章思考题**：现在单次长会话能稳稳跑下去了，但一旦退出终端、明天重新打开，`messages` 依然从零开始，你的代码偏好和项目约定还得再说一遍。怎么把“下次还要用”的长期信息自动留下来，同时又不让记忆变成新的垃圾堆？下一章 `s09` 我们来做 Memory。
 
 ```js ! agent.js range=304:356
 import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -8891,107 +8816,53 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s09：Memory —— 只保存下次还要用的信息
-新人工作久了会遇到两类信息：一类是当前任务里的临时过程，比如命令输出、探索路径、一次性结论；另一类是以后还会反复用到的事实，比如用户偏好、项目约定、长期规则。
+## !!steps s09：Memory - 只保存下次还要用的长期信息
+上一章 `s08` 给当前会话装上了压缩流水线，但那只保住“这一次对话”。一旦退出终端明天重开，`messages` 清零，你的代码风格、输出偏好和项目约定又得从头交代。
 
-`s08` 的 compact 负责让当前会话继续跑下去，`s09` 的 memory 负责把“下次还要用”的信息保存下来。
+这一章我们给 Agent 加上跨会话记忆层。**Memory 不是把聊天记录永久备份，而是只保存下次很难从代码和当前对话推出来的长期事实，并在需要时按相关性挑出来用。**
 
-### 本章目标
+### 问题
 
-压缩可以缩短当前会话历史，但压缩后的摘要不适合保存所有长期知识。
+用户偏好、团队习惯、隐性规则会反复派上用场，但它们不会写在代码文件里。如果每次开新会话都靠人工重复，非常烦琐；反过来，如果把所有历史对话原封不动存起来并全量塞进上下文，记忆很快就会膨胀成新的噪音堆。
 
-`s09` 加入 memory 层：
+### 解决方案
 
-- 长期记忆保存到 `.memory/` 文件夹。
-- `MEMORY.md` 是记忆索引，只放名字和一句话描述。
-- 每轮请求开始时，只挑和当前问题相关的记忆临时放进请求里。
-- 每轮请求结束后，从本轮对话里提取新的长期记忆。
-- 记忆文件太多时，再做整理合并。
-
-### 为什么这一步重要
-
-memory 不是“把聊天记录永久保存”。
-
-只有下次很难从当前代码和当前对话重新推导出来的信息，才值得保存。例如：
-
-- 用户偏好：喜欢简洁教程、喜欢先看代码再看解释。
-- 项目约定：这个项目统一使用 ES Module。
-- 长期规则：文档里不要使用难懂黑话。
-- 反馈结论：某类 prompt 更适合这个教程。
-
-临时命令、一次性输出、当前任务的中间推理，不应该进入 memory。否则 memory 会变成另一个越来越大的上下文。
-
-### 新增函数速览
-
-- `writeMemoryFile(name, type, description, body)`：把一条长期记忆保存成 Markdown 文件。
-- `listMemoryFiles()` / `readMemoryIndex()`：读取已有记忆和索引，给后续选择与注入使用。
-- `selectRelevantMemories(messages, maxItems)`：让模型从记忆索引里挑出当前任务相关的记忆。
-- `loadMemories(messages)`：把选中的记忆正文合并成一段上下文，只在本轮请求时注入。
-- `extractMemories(messages)`：任务结束后调用模型，判断哪些信息值得跨会话保存。
-- `consolidateMemories()`：定期整理记忆，减少重复和过期内容。
-
-### 流程图
+我们在 `.memory/` 目录下落地一套“存、选、注、提、理”闭环：每条记忆是带 frontmatter 的独立 Markdown 文件（分 `user`、`feedback`、`project`、`reference` 四类），同时维护一份轻量索引 `MEMORY.md`，每条只占一行：
 
 ```mermaid
 flowchart TD
   M["messages"] --> C["压缩流程（沿用 s08）"]
-  C --> LD["加载记忆<br/>挑出相关记忆文件注入，最多 5 条"]
+  C --> LD["加载记忆<br/>挑出相关记忆临时注入，最多 5 条"]
   LD --> L["LLM"]
   L --> Q{"有 tool_calls 吗？"}
   Q -->|没有| R["返回结果"]
   Q -->|有| H["handlers<br/>bash · read · write · edit · glob · task"]
   H -->|工具结果追加到 messages| M
   MEM[(".memory/<br/>MEMORY.md 索引 + *.md 记忆文件")] -->|读取| LD
-  R --> EX["提取：每轮结束后<br/>把偏好、约束写成记忆"]
+  R --> EX["提取：每轮结束后<br/>从压缩前快照提取长期事实"]
   EX -->|写入| MEM
-  CO["整理：记忆文件数 ≥ 10 时<br/>去重 · 合并 · 删减"] -->|覆写| MEM
+  EX --> CO["整理：文件数 ≥ 10 时<br/>合并去重并重写索引"]
+  CO -->|覆写| MEM
 ```
+
+记忆数据的四类划分与读写闭环如下：
+
 ```mermaid
 flowchart TD
-  EX["提取<br/>每轮结束后触发<br/>先查已有，避免重复"] -->|写入| ST
+  EX["提取<br/>每轮结束后触发<br/>对照已有索引，避免重复"] -->|写入| ST
   CO["整理<br/>文件数 ≥ 10 时触发<br/>去重 · 合并 · 删减"] -->|覆写| ST
   ST[("存储 .memory/*.md + MEMORY.md<br/>frontmatter：name / description / type")] -->|读取| LO["加载<br/>索引放进 SYSTEM<br/>按需挑选最多 5 条注入"]
   TYPES["四类记忆：user 你是谁 · feedback 怎么做事<br/>project 正在发生什么 · reference 东西在哪找"] -.-> ST
 ```
-```text
-用户输入
-  |
-  v
-读取 MEMORY.md 索引
-  |
-  v
-选择相关记忆
-  |
-  v
-临时放进本次请求
-  |
-  v
-agent loop
-  |
-  v
-回合结束：提取新的长期记忆
-  |
-  v
-写入 .memory/*.md，并重建 MEMORY.md
-```
 
-```text
-.memory/
-  MEMORY.md          # 索引：每条记忆一行，便宜、常驻
-  tutorial-style.md  # 单条记忆：Markdown + frontmatter
-  project-facts.md
+这里有两个关键的工程细节：
 
-每一轮 agent_loop：
-  1. 读取 MEMORY.md 索引
-  2. 选择和当前任务相关的记忆
-  3. 把记忆正文临时注入本轮请求
-  4. 继续沿用 s08 的上下文压缩
-  5. 回合结束后，从原始消息里提取新记忆
-```
+- **临时注入不污染历史**：`buildRequest()` 返回 `messages` 的浅拷贝，只在发送本次请求时把 `<relevant_memories>` 拼到最新用户消息前。原数组不变，下一轮还能换一批更相关的记忆。
+- **三类辅助调用彼此兜底**：选记忆（失败时降级关键词匹配）、提记忆（读取压缩前快照 `preCompress`，防止压缩把原话压没）和理记忆（文件数满 10 个触发）都包在 `try/catch` 里，任何一步失败都不会打断主对话。
 
 ---
 
-本章要在 s08 的基础上再加两百多行，先从最小的改动开始：`node:fs` 的引入改成多行，并加上后面整理记忆时删除文件要用的 `rmSync`。这一步不改变行为。
+这一章要新增读写和整理记忆文件的逻辑，先从最小的一步开始：把 `node:fs` 的引入整理成多行，顺手加上后面重写记忆目录时要用的 `rmSync`。这一步不改变运行行为。
 
 本次代码变化：9 行。
 
@@ -9386,7 +9257,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-记忆就是文件：`.memory/` 目录下，每条记忆一个 Markdown 文件，文件开头几行记录名字、描述和类型。`setMemoryDir` 让测试可以把目录换到临时位置。`listMemoryFiles` 读出目录里所有记忆文件，解析开头的信息，返回一个数组；目录不存在就返回空数组。`MEMORY.md` 是索引文件，不算一条记忆，所以要排除掉。
+记忆直接落成 `.memory/` 下的普通 Markdown 文件，头部用 frontmatter 存名字、描述和类型。`setMemoryDir` 方便测试切换到临时目录；`listMemoryFiles` 扫描所有 `.md` 并复用 `parseFrontmatter` 解析出来，排除索引文件 `MEMORY.md`。目录还不存在时直接返回空数组。
 
 本次代码变化：26 行。
 
@@ -9805,7 +9676,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`writeMemoryFile` 把一条记忆写成文件：文件名由记忆的名字转换而来，内容是开头的信息加正文。每次写完都调用 `rebuildIndex`，把所有记忆整理成一份清单写进 `MEMORY.md`，每条一行，包含名字、文件名和描述。`readMemoryIndex` 读出这份清单，后面会把它放进系统提示词。到这里，存储部分完成了，但还没有任何地方调用它。
+`writeMemoryFile` 把记忆名字转成文件 slug，拼好 frontmatter 和正文后写盘，再调用 `rebuildIndex` 重建 `MEMORY.md` 索引清单。`readMemoryIndex` 负责读出这份清单供系统提示词使用。到这里存储层就齐了，但还没接入主循环。
 
 本次代码变化：20 行。
 
@@ -10246,7 +10117,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-记忆多了以后，不可能每次都把全文发给模型，需要先挑。`selectRelevantMemories` 取用户最近 3 条消息，和每条记忆的名字、描述做比较，最多返回 5 个文件名。这一步先写最简单的办法：把用户的话拆成词，看哪条记忆的名字或描述里包含这些词。
+记忆多了不能每次都全量塞进请求，需要先筛选。`selectRelevantMemories` 取出用户最近 3 条文本消息，这一步先实现最简单的兜底版：按词拆分后匹配记忆的名字和描述，最多返回 5 个文件名。
 
 本次代码变化：18 行。
 
@@ -10703,7 +10574,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-关键词匹配很粗糙，换个说法就匹配不上。所以优先让模型来选：把最近的对话和记忆清单一起发给模型，要求只返回相关条目的序号，比如 `[0, 2]`。返回的内容要检查，只接受范围内的整数。如果这次调用失败，或者返回的内容解析不了，就落到上一步写的关键词匹配上。这次调用和主对话无关，用的是一份独立的 `messages`。
+关键词匹配换个说法就容易漏，所以优先让模型挑：把近期对话和编号后的记忆清单发给一次独立的 `callLlm`，要求只返回相关序号的 JSON 数组（例如 `[0, 2]`），校验下标范围后取出对应文件名。一旦调用失败或返回格式不对，立刻无感回退到上一步的关键词匹配。
 
 本次代码变化：26 行。
 
@@ -11186,7 +11057,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`loadMemories` 读出选中记忆的全文，包在 `<relevant_memories>` 标签里。`buildRequest` 把这段内容拼到最近一条用户消息的前面，但它返回的是 `messages` 的一份副本，原数组不变。也就是说，记忆只出现在这一次发给模型的请求里，不会留在对话历史中。这样历史不会越积越长，下一轮也可以换一批更相关的记忆。
+`loadMemories` 读出选中记忆的全文，用 `<relevant_memories>` 包起来。`buildRequest` 找到最近一条用户文本消息，把记忆正文拼在前面，但只改浅拷贝 `copy`，绝不动原 `messages` 数组。这样记忆只对当前这次请求生效，不会把旧记忆永久留在对话历史里。
 
 本次代码变化：24 行。
 
@@ -11693,7 +11564,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-现在把读取接进 loop，一共两条路径。第一条：`SYSTEM` 从常量改成函数 `buildSystem`，每次用户提问时读一次索引，放进系统提示词，模型因此始终知道“有哪些记忆”。第二条：进入循环前调用 `loadMemories` 选出相关记忆，调用模型时用 `buildRequest` 临时拼进去，模型因此能看到“相关记忆的全文”。如果 `.memory/` 里已经有文件，这一步之后模型就会用上它们。
+现在把记忆读取接进 `agentLoop`，一共两条线：第一条把固定常量 `SYSTEM` 改成 `buildSystem()`，每次提问时读入 `MEMORY.md` 索引，让模型知道记忆库里有什么；第二条在进入循环前调 `loadMemories(messages)`，调用模型时通过 `buildRequest` 临时注入选中记忆全文。
 
 本次代码变化：16 行。
 
@@ -12214,7 +12085,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-接下来写“记忆从哪来”。`MEMORY_TYPES` 列出四种记忆类型。`extractMemories` 的第一部分是准备材料：从对话里取最近 10 条有文字内容的 user 和 assistant 消息，拼成一段文本，最多 4000 个字符；再把已有记忆的名字和描述列出来，稍后告诉模型“这些已经记过了”。
+读通了，接下来写“记忆从哪来”。先定义四种合法类型 `MEMORY_TYPES`，再写 `extractMemories` 的前半段：挑出最近 10 条带文本的 `user` / `assistant` 消息（最多 4000 字符），同时列出已有记忆清单，准备下一步交给模型避免重复提取。
 
 本次代码变化：16 行。
 
@@ -12749,7 +12620,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-把刚才准备的对话和已有记忆交给模型，请它找出长期有用的信息：用户的偏好、约束、项目里的事实。要求返回 JSON 数组，每一项包含名字、类型、一句话描述和正文；没有新内容就返回空数组。整个调用放在 `try/catch` 里，失败就当作没有提取到，不能因为记忆出错而打断用户的对话。
+把对话片段和已有记忆清单发给一次独立的 `callLlm`，要求只提取长期有效的偏好、约束或项目事实，并按 `{name, type, description, body}` 的 JSON 数组返回；没有新信息就返回 `[]`。整个调用包在 `try/catch` 里，提取失败返回 `0`，绝不影响正常回复。
 
 本次代码变化：22 行。
 
@@ -13304,7 +13175,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-解析模型返回的 JSON，每一项只要有描述和正文，就调用 `writeMemoryFile` 写成文件，类型不合法的按 `user` 处理，最后打印提取了几条。然后接进 loop：模型不再请求工具、准备返回答案时，调用 `extractMemories`。传进去的是 `preCompress`，也就是每一轮压缩之前保存的对话副本，因为压缩之后细节可能已经丢了。从这一步起，你告诉 agent 的偏好会被自动记下来。
+解析模型返回的 JSON 数组，把合法条目逐个调用 `writeMemoryFile` 写入磁盘（未知类型回落到 `user`），有新增时顺手打印提示。随后接入 `agentLoop`：每轮压缩前先拷贝一份 `preCompress`，等模型不再调工具、准备返回答案时再从 `preCompress` 提取，避免刚压缩完把用户原话弄丢。
 
 本次代码变化：21 行。
 
@@ -13886,7 +13757,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-记忆只增不减，时间长了会出现重复和过时的内容。`consolidateMemories` 负责整理。先写前半部分：记忆文件不到 10 个就直接返回，什么都不做；够了就把所有记忆的名字、描述和正文拼成一份材料，最多 16000 个字符。
+只写不理，记忆迟早会出现重复或前后矛盾。`consolidateMemories` 负责大扫除，先写前半段：文件数不到 `CONSOLIDATE_THRESHOLD`（10 个）就直接返回；达到门槛才把所有记忆拼成最多 16000 字符的完整清单。
 
 本次代码变化：10 行。
 
@@ -14472,7 +14343,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-把材料交给模型，请它合并重复的、去掉过时或互相矛盾的，并且优先保留用户的偏好，返回整理后的完整列表。拿到结果后，先删掉旧的记忆文件，再把新列表逐条写回去。和提取一样，整个过程放在 `try/catch` 里，失败就保持原样。最后在 loop 里、提取之后调用它。
+把清单交给模型合并重复条目、剔除过时和冲突内容，同时优先保住用户偏好。拿到新的 JSON 列表后，先删掉 `.memory/` 下除 `MEMORY.md` 外的旧 `.md` 文件，再逐条写回并自动刷新索引。最后把它挂在 `agentLoop` 回合末尾、`extractMemories` 之后。
 
 本次代码变化：32 行。
 
@@ -15092,33 +14963,25 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后补一行整理完成时的日志，能看到记忆从多少条变成了多少条，提示符改成 `s09 >> `。回头看：记忆系统就是“文件 + 四次模型调用的时机”，读取在一轮开始，写入在一轮结束。
+最后补一行整理完成的日志，直观显示记忆条数从多少精简成了多少，再把提示符切到 `s09 >> `。回头看，整个记忆层不过是“本地 Markdown 文件 + 三类辅助模型调用（选记忆、提记忆、理记忆）”，读在回合前，写在回合后。
 
 本次代码变化：3 行。
 
 ### 测试 Prompt
 
-第一次运行：让 agent 保存一个长期偏好。
+第一次运行，让 Agent 保存一条长期偏好：
 
 ```text
 remember: 我写教程时喜欢先给最小可运行代码，再解释原理。请记住这个长期偏好，并用一句话回复。
 ```
 
-观察重点：
-
-- 命令行里应该看到类似 `[Memory: extracted 1 new memories]`。
-- `.memory/` 下应该出现新的 `.md` 记忆文件。
-- `.memory/MEMORY.md` 应该出现一条索引。
-
-输入 `q` 退出，重新运行 `node code-agent-course/s09-memory.js`，再验证跨会话记忆：
+观察终端是否打印 `[Memory: extracted 1 new memories]`，同时 `.memory/` 下生成新的 `.md` 文件并更新了 `MEMORY.md`。接着输入 `q` 退出，重新运行 `cd code-agent-course && node s09-memory.js`，验证跨会话回忆：
 
 ```text
 下次帮我写教程时，我喜欢什么顺序？请根据 memory 回答，不要读取文件。
 ```
 
-观察重点：模型应该能说出“先给最小可运行代码，再解释原理”。
-
-如果想直接查看文件，也可以再输入：
+模型应该能直接答出“先给最小可运行代码，再解释原理”。如果想核对落盘内容，也可以接着输入：
 
 ```text
 用 glob 查找 .memory/*.md，然后总结这些 memory 文件保存了什么。
@@ -15126,13 +14989,15 @@ remember: 我写教程时喜欢先给最小可运行代码，再解释原理。�
 
 ### 扩展阅读：商业级 Agent 怎么做 Memory
 
-Memory 和 context 不一样：context 是当前工作台，memory 是下次还要用、但当前文件和对话不一定能重新推导的信息。
+成熟产品都把“当前工作台（context）”和“跨会话沉淀（memory）”分开对待，不会把聊天记录原样全塞回下一次对话：
 
-- Claude Code：区分人工编写的 `CLAUDE.md` 和自动记忆。自动记忆保存模型从更正、偏好和项目中学到的内容，并在后续会话加载。参考 [Claude Code Memory](https://code.claude.com/docs/en/memory)。
-- Codex：开源 core 有两阶段 memory pipeline：先从近期 rollout 提取结构化记忆，再由内部子代理做 consolidation。这说明记忆不是原样保存全部聊天。参考 [Codex Memories Pipeline](https://github.com/openai/codex/blob/main/codex-rs/core/src/memories/README.md)。
-- opencode：公开文档重点是项目级和全局 `AGENTS.md` 规则，它们会进入后续会话的上下文；这更接近人工维护的长期指令，不等于本章的自动提取。参考 [OpenCode Rules](https://opencode.ai/docs/rules)。
+- **Claude Code**：区分人工维护的 `CLAUDE.md` 和自动记忆，自动记忆从用户更正、偏好与项目事实里提炼独立文件，并在后续会话按需加载。参考 [Claude Code Memory](https://code.claude.com/docs/en/memory)。
+- **Codex**：开源 core 采用两阶段 memory pipeline，先从近期 rollout 提取结构化记忆，再由内部子代理执行合并整理（consolidation）。参考 [Codex Memories Pipeline](https://github.com/openai/codex/blob/main/codex-rs/core/src/memories/README.md)。
+- **opencode**：公开文档重点是项目级与全局 `AGENTS.md` 规则文件，由人工维护并载入后续会话，偏向长期指令而非自动提取。参考 [OpenCode Rules](https://opencode.ai/docs/rules)。
 
-本章的 `.memory/*.md` 是最小版本：先保存长期事实，再用索引和相关性选择控制注入量。
+**写得克制、读得精准、定期整理，跨会话记忆才不会越积越乱。**
+
+> **本章思考题**：看看刚才写的 `buildSystem()`，身份说明、技能目录、压缩规则、记忆索引全都硬拼在一条大模板字符串里，工具清单甚至还没动态同步。等后面再加任务系统、团队协作和 MCP 工具，这样硬拼很快会失控。能不能把系统提示词改造成按当前状态拼装的流水线？下一章 `s10` 我们来重构 System Prompt。
 
 ```js ! agent.js range=235:609
 import {
@@ -15750,54 +15615,26 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s10：System Prompt —— 从固定文本变成装配流水线
-新人每天上班前需要一份任务说明，但不同场景需要不同提醒：有时要强调安全，有时要带上记忆，有时要加载技能。`s10` 把这份说明书变成装配线，每轮按当前情况组装给他看。
+## !!steps s10：System Prompt - 从固定文案升级为按状态装配的流水线
+上一章 `s09` 给 Agent 加上了跨会话记忆，但系统提示词还是靠 `buildSystem()` 在一条大模板字符串里硬拼出来的。工具列表没有自动同步，技能为空时还会拼出 `(no skills found)`，后面再叠加任务图、团队协作和 MCP 工具只会越拼越乱。
 
-### 本章目标
+这一章我们把系统提示词改造成分段装配流水线。**System Prompt 不是写死的静态文案，而是根据当前运行时状态动态拼出的输入流水线：状态没变走缓存，状态一变立刻刷新。**
 
-system prompt 不应该是一大段永远不变的字符串。
+### 问题
 
-`s10` 把 prompt 拆成多个 section，每轮根据当前运行时状态装配。
+Agent 的运行时状态随时在变：当前注册了哪些工具、扫描到了哪些技能、`MEMORY.md` 索引里有没有新记忆，每一轮都可能不同。把所有指令揉进一段长字符串，不仅越改越难维护，还很容易让空段落占位，或者工具改了状态后模型看到的仍然是过期提示词。
 
-### 新增能力
+### 解决方案
 
-本章不减少已有能力，只把已有的工具、技能、压缩和记忆说明改成按段装配。
-
-- `assembleSystemPrompt(context)`：按 section 拼 prompt。
-- `getSystemPrompt(context)`：相同 context 走缓存。
-- `buildContext()`：收集工具、技能、记忆等运行时状态。
-- 工具执行后重新计算 prompt。
-
-### 为什么这一步重要
-
-prompt 是输入流水线，不是固定文案。
-
-当工具、技能、记忆变化时，模型看到的系统信息也应该变化。后面的 MCP 动态工具池就是这个思想的延伸。
-
-### 参考实现提醒
-
-System Prompt 不是一段越写越长的常量，而是运行时输入流水线：
-
-- 身份、工具、技能目录、记忆、MCP 状态都应该按当前状态装配。
-- prompt section 要有稳定顺序，避免同样状态下模型看到的规则忽前忽后。
-- 缓存 prompt 可以省成本，但状态变化后必须失效，否则模型会看见旧世界。
-
-### 新增函数速览
-
-- `assembleSystemPrompt(context)`：按固定顺序把身份、工具、技能、压缩规则和记忆拼成最终 system prompt。
-- `getSystemPrompt(context)`：按上下文 key 缓存 system prompt，避免每一轮重复拼装。
-- `resetSystemPromptCache()`：测试或配置变化时清空 prompt 缓存。
-- `buildContext()`：读取当前工具名、skill 列表和 memory 索引，生成 prompt 装配所需的 context；工作目录由 `identity` section 直接读取。
-
-### 流程图
+我们把大字符串拆成 `PROMPT_SECTIONS` 五个分段函数，用 `SECTION_ORDER` 固定拼接顺序，由 `buildContext()` 从真实运行状态派生上下文，再通过 `getSystemPrompt()` 按状态做缓存：
 
 ```mermaid
 flowchart TD
-  subgraph NEW["s10 新增：按需拼装系统提示词"]
-    PS["PROMPT_SECTIONS<br/>identity · tools · workspace 始终带<br/>memory 按需带"] --> AS["按 SECTION_ORDER 拼接<br/>用空行连成一段"]
-    AS --> CA{"上下文和上次一样？"}
-    CA -->|一样| HIT["直接复用缓存 lastSystemPrompt"]
-    CA -->|不一样| NEWP["重新拼装并更新缓存"]
+  subgraph NEW["s10 新增：按运行时状态装配系统提示词"]
+    BC["buildContext()<br/>读取当前 tools · skills · memories"] --> CA{"context key 和上次一样？"}
+    CA -->|一样| HIT["复用缓存 lastSystemPrompt"]
+    CA -->|不一样| AS["assembleSystemPrompt()<br/>按 SECTION_ORDER 拼 5 段，跳过 null"]
+    AS --> NEWP["更新缓存并返回新 prompt"]
   end
   M["messages"] --> C["压缩 + 加载记忆"]
   C --> L["LLM"]
@@ -15805,28 +15642,20 @@ flowchart TD
   NEWP -->|system| L
   L --> H["handlers<br/>bash · read · write ..."]
   H -->|工具结果追加到 messages| M
+  H -.->|每轮工具后重新 buildContext| BC
 ```
-```text
-运行时状态
-  |
-  +--> tools
-  +--> skills
-  +--> memory index
-  +--> compact policy
-  |
-  v
-assembleSystemPrompt(context)
-  |
-  v
-system prompt
-  |
-  v
-call LLM
-```
+
+这套装配流水线有三个关键设计：
+
+- **固定顺序、空段省略**：`SECTION_ORDER` 锁定为 `["identity", "tools", "skills", "compaction", "memory"]`。`identity`（读取当前工作目录）和 `compaction` 始终输出；`tools`、`skills`、`memory` 在为空时返回 `null` 自动跳过，不往提示词里塞废话。
+- **同态缓存、变动失效**：`getSystemPrompt()` 把 `context` 序列化为 key，状态没变就直接复用上次结果（保持前缀稳定，也有利于服务端 Prompt Cache）；一旦变动立即重拼。
+- **每轮工具后刷新**：`agentLoop` 在进入循环前和每批工具跑完后都会重新调用 `buildContext()` 和 `getSystemPrompt()`，让后续动态增删工具或写入记忆能马上反映到提示词里。
+
+顺手说明：本章源码同时去掉了 `s09` 里的三行压缩教学日志，但自动压缩、手动压缩和应急压缩能力全部保留。
 
 ---
 
-s09 的 `buildSystem` 把所有内容写在一个长字符串里，想改其中一部分很不方便。现在换一种组织方式：`PROMPT_SECTIONS` 是一张表，每一项是一个小函数，负责生成提示词的一段。先放第一段 `identity`，说明“你是谁、该怎么干活”，它不依赖任何状态，每次都一样。旧的 `buildSystem` 先不动。
+`s09` 的 `buildSystem` 把所有规则都写死在一条长字符串里，改一段就要动整块。现在换一种组织法：`PROMPT_SECTIONS` 是一张表，每一项都是负责生成一段文案的小函数。我们先放第一段 `identity`，说明“你是谁、在哪里、该怎么干活”。旧的 `buildSystem` 暂时留着，保证当前帧仍可运行。
 
 本次代码变化：5 行。
 
@@ -16450,7 +16279,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-继续往表里加段落。每个函数接收一个 `ctx`，里面是当前的真实状态。关键在于可以返回 `null`：没有工具就不写工具那段，没有技能就不写技能那段，没有记忆就不写记忆那段。这样提示词里不会出现“可用技能：（无）”这种空话，模型看到的每一段都有用。
+接着往 `PROMPT_SECTIONS` 里补齐其余四段。每个函数接收当前状态对象 `ctx`，最大的好处是支持返回 `null`：没有工具、没有技能或没有记忆时直接跳过对应段落，不再往提示词里拼“可用技能：(no skills found)”这种无效空话。
 
 本次代码变化：8 行。
 
@@ -17082,7 +16911,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`SECTION_ORDER` 规定各段的先后顺序。`assembleSystemPrompt` 按这个顺序依次调用每一段的函数，去掉返回 `null` 的，剩下的用空行连接成完整的提示词。顺序固定很重要：同样的状态永远得到完全相同的文本，后面做缓存才有意义。
+`SECTION_ORDER` 显式规定五段的先后顺序，`assembleSystemPrompt` 按序调用每个段落函数，用 `.filter(Boolean)` 滤掉 `null`，再用空行拼成最终文案。顺序必须固定：同样的状态每次都会产出逐字节一致的提示词，后面的缓存和服务端前缀复用才立得住。
 
 本次代码变化：6 行。
 
@@ -17720,7 +17549,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-各段函数需要的 `ctx` 从哪来？`buildContext` 直接读程序当前的状态：`tools` 数组里登记了哪些工具，`skills/` 里扫描到了哪些技能，记忆索引里有什么。注意它不去分析用户说了什么，只看事实。以后新增一个工具或一条记忆，提示词会自动跟着变，不需要手动同步。
+段落函数需要的 `ctx` 从哪里来？`buildContext` 直接读取程序当下的真实状态：从 `tools` 提取工具名列表，从 `listSkills()` 拿技能目录（空提示归一成空串），从 `readMemoryIndex()` 读记忆索引。以后新增工具或写入新记忆，提示词会自动跟着变，不用再人工两头同步。
 
 本次代码变化：8 行。
 
@@ -18366,7 +18195,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-拼装提示词虽然不慢，但每一轮都重复拼出一模一样的文本没有必要。`getSystemPrompt` 把 `context` 转成 JSON 字符串当作标记，和上一次的比较：一样就直接返回上次的结果，不一样才重新拼装并记下来。`resetSystemPromptCache` 清空这份记录，测试时会用到。
+虽然拼字符串本身很快，但状态没变时每轮重拼也没必要。`getSystemPrompt` 把 `context` 转成 JSON 字符串作为缓存键，和上次一样就直接返回 `lastSystemPrompt`，不一样才重新调用 `assembleSystemPrompt` 并刷新缓存。顺手提供 `resetSystemPromptCache`，方便单测隔离状态。
 
 本次代码变化：14 行。
 
@@ -19026,7 +18855,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-现在可以替换了。进入循环前，先 `buildContext` 再 `getSystemPrompt`，得到这一轮的提示词。每执行完一批工具，再做一次同样的事：工具可能刚写了一条记忆，状态变了就会重新拼装，没变就直接用缓存。旧的 `buildSystem` 不再有人调用，整个删掉。
+准备工作全就绪，现在正式切换：进入 `agentLoop` 前先 `buildContext()` 再 `getSystemPrompt(context)`；每执行完一批工具后再刷新一次，状态没变直接命中缓存，状态变了立刻拿到新提示词。旧的 `buildSystem` 不再需要，直接删掉。
 
 本次代码变化：20 行。
 
@@ -19678,7 +19507,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后做一点整理：自动压缩的判断缩成一行，上一章为了演示而加的三行压缩日志在这一章的源码里去掉了，提示符改成 `s10 >> `。本章没有增加任何新工具，改变的只是系统提示词的生成方式：从一个写死的字符串，变成按当前状态一段段拼出来的结果。
+最后做点收尾整理：把自动压缩判断收成一行，清掉前两章演示压缩时加的三条日志（压缩逻辑本身不变），再把交互提示符切到 `s10 >> `。这一章没有新增工具，而是把系统提示词从“手写常量”升级成了“按状态装配的流水线”。
 
 本次代码变化：9 行。
 
@@ -19688,17 +19517,19 @@ if (isMainModule(import.meta.url)) {
 先列出当前可用工具和技能，再创建一个小文件 prompt-check.txt。
 ```
 
-观察重点：system prompt 应该按当前工具、技能、记忆等运行时状态组装，而不是固定字符串。
+运行后可以看到模型能准确列出当前注册的全部工具名（来自 `tools` 段）以及已扫描到的技能（若有），说明系统提示词已经按真实运行状态动态拼装，随后再正常调用 `write_file` 创建文件。
 
 ### 扩展阅读：商业级 Agent 怎么做 Prompt 装配
 
-成熟 agent 看到的 system prompt 通常由运行时状态组装，而不是一段永远不变的文本：
+商业级 Agent 发给模型的 system prompt 通常都不是静态文案，而是由运行时按当前会话状态逐段装配出来的：
 
-- Claude Code 会把工具、权限、项目规则和记忆等当前信息加入模型上下文。
-- Codex 由运行时把会话状态、工具、sandbox / approval 约束和 memory 组合成 provider 请求。
-- OpenCode 会按系统上下文、项目规则、工具和会话状态组织模型输入。
+- **Claude Code**：运行时会把当前可用工具、权限模式、项目规则与记忆状态动态装配进模型上下文。参考 [Claude Code Memory](https://code.claude.com/docs/en/memory)。
+- **Codex**：由核心运行时把会话状态、工具清单、sandbox / approval 约束和 memory 统一组装成 provider 请求。参考 [Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)。
+- **opencode**：按系统上下文、项目规则、工具与会话状态分段组织提示词输入，方便不同环境按需裁剪。参考 [OpenCode system prompt 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session/prompt)。
 
-可继续阅读：[Claude Code memory](https://code.claude.com/docs/en/memory)、[Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)、[OpenCode system prompt 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session/prompt)。本章的 `PROMPT_SECTIONS` 就是最小教学版：section 的顺序固定，是否出现由当前 context 决定。
+**顺序固定保缓存、按状态裁剪防陈旧，这就是动态 System Prompt 装配的核心原则。**
+
+> **本章思考题**：到这里，技能、压缩、记忆、动态提示词都就位了。但只要放进真实网络环境，模型接口随时可能返回 `429` 限流、`529` 过载，或者回答太长被半路截断，现在的循环一碰就断。怎么按错误类型走不同的恢复分支，让 Agent 抗住真实抖动？下一章 `s11` 我们来做 Error Recovery。
 
 ```js ! agent.js range=560:635
 import {
@@ -20342,63 +20173,51 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s11：Error Recovery —— 失败进入恢复分支
-真实工作里，新人会遇到接口限流、服务过载、输出写到一半和材料太长。`s11` 不再让 agent 遇错就退出，而是先判断错误类型，再选择等待重试、续写、压缩或停止。
+## !!steps s11：Error Recovery - 给失败分类，让循环进入恢复分支
+上一章 `s10` 把系统提示词改造成了按状态装配的流水线，但眼下只要真实接口抛一次 `429` 限流、`529` 过载，或者回答写太长被半路截断，主循环就会直接中断，把半成品或异常堆栈直接甩给用户。
 
-### 本章目标
+这一章我们给模型调用装上分类恢复机制。**错误恢复不是闭着眼把请求套一层循环死重试，而是先给失败分清类型，再分别走退避等待、切换备用模型、提额续写或应急压缩。**
 
-`s10` 已经能动态组装 system prompt，但一次 LLM 请求失败时，主循环仍缺少恢复策略。
+### 问题
 
-`s11` 保留前面的工具、计划、子代理、技能、压缩、记忆和动态 prompt，只给 LLM 调用增加四条恢复路径：
+调用真实 LLM 接口时，不同故障的对策完全相反：`429` 限流和 `529` 过载属于瞬态抖动，需要退避等待甚至切备用模型；输出被截断需要拉高 `max_tokens` 并接着写；上下文超限必须先压缩再重发；而参数错、鉴权错这类硬伤重试再多次也没用。不加区分，要么一碰抖动就崩，要么在必败错误上白白空转。
 
-- `429` 限流：等待后重试。
-- `529` 服务过载：等待后重试，连续发生时可切换备用模型。
-- `finish_reason: "length"`：提高输出上限，仍被截断时继续生成。
-- 上下文过长：先做一次应急压缩，再重试当前请求。
+### 解决方案
 
-### 为什么这一步重要
-
-重试不是简单地再调用一次接口。限流需要等待，输出截断需要续写，上下文超限需要先腾出空间，不可恢复错误则应该停止。`RecoveryState` 把这些状态集中保存，主循环才知道自己是在正常执行还是恢复。
-
-### 新增函数速览
-
-- `RecoveryState`：记录是否提高过输出上限、续写次数、连续 `529` 次数、是否做过应急压缩，以及当前备用模型。
-- `retryDelay(attempt, retryAfter)`：计算指数退避时间；第二个参数是已经换算成毫秒的等待时间。
-- `withRetry(fn, state)`：包住一次 LLM 请求，只对 `429` 和 `529` 这类瞬态错误退避重试。
-- `setSleepFn(fn)`：测试入口，用立即返回的函数替换真实等待。
-
-`reactiveCompact(messages)` 来自 s08，本章只是把它接到“上下文过长”的恢复分支，不是重新实现一套压缩。
-
-### 流程图
+我们用 `RecoveryState` 集中跟踪一次提问里的所有恢复计数，用 `withRetry()` 包住瞬态重试，再在 `agentLoop` 里分别处理上下文超限与输出截断：
 
 ```mermaid
 flowchart TD
-  M["messages"] --> P["组装提示词"] --> C["压缩 + 加载记忆"] --> L["LLM 调用<br/>外包 try / catch"]
-  L -->|正常| H["handlers"]
+  M["messages"] --> P["组装提示词 + 压缩 + 记忆"] --> W["withRetry(callLlm)"]
+  W -->|429 限流 / 529 过载| R3["指数退避 + 随机抖动重试（最多 10 次）<br/>连续 3 次 529 可切 FALLBACK_MODEL_ID"]
+  R3 --> W
+  W -->|抛出上下文过长| R2["reactiveCompact 应急压缩<br/>最多重试 1 次"]
+  R2 --> W
+  W -->|其他不可恢复错误| ERR["打印错误日志并返回 [Error]"]
+  W -->|正常返回 choice| LEN{"finish_reason === length？"}
+  LEN -->|是| R1["先升 maxTokens 8K → 64K<br/>仍截断则注入续写提示（最多 3 次）"]
+  R1 --> W
+  LEN -->|否| H["进入工具执行或返回答案"]
   H -->|工具结果| M
-  L -->|出错| E{"是哪种错误？"}
-  E -->|max_tokens| R1["先调大 max_tokens<br/>再提示模型接着写<br/>最多 3 次"]
-  E -->|上下文过长| R2["应急压缩后<br/>重试一次<br/>仍超限则退出"]
-  E -->|429 / 529| R3["指数退避 +<br/>随机抖动重试<br/>次数有上限"]
-  R1 & R2 & R3 -->|重新调用| L
 ```
-```text
-call LLM
-  |
-  +-- 成功 ------------------------> 正常处理
-  |
-  +-- 429 / 529 ------------------> 等待 --> 重试
-  |
-  +-- finish_reason = length -----> 提高上限 / 续写
-  |
-  +-- prompt too long ------------> reactiveCompact --> 重试一次
-  |
-  +-- 其他错误 --------------------> 返回 [Error]
-```
+
+四条恢复路径的触发条件和上限都很明确：
+
+| 异常或状态 | 处理方式 | 保护上限 |
+|---|---|---|
+| `429` 限流 | `withRetry()` 指数退避（500ms 起翻倍，封顶 32s，加 0%–25% 抖动） | 最多重试 10 次 |
+| `529` 过载 | 退避重试，连续 3 次且配置了 `FALLBACK_MODEL_ID` 时切备用模型 | 共享 10 次重试上限 |
+| `finish_reason: "length"` | 首次把 `maxTokens` 从 8000 升到 64000 重试；再截断则追加续写提示 | 最多续写 3 次 |
+| 上下文过长 | 调用 `s08` 的 `reactiveCompact()` 压缩早期历史后重试 | 每次提问限 1 次 |
+
+补充两点接口细节：
+
+- **协议字段差异**：Anthropic Messages API 用 `response.stop_reason == "max_tokens"` 表示截断。本教程 JS 版走 OpenAI-compatible `/chat/completions`，对应判断 `choice.finish_reason === "length"`（工具调用是 `"tool_calls"`，正常结束是 `"stop"`）。
+- **预留 `Retry-After` 参数**：`retryDelay(attempt, retryAfter)` 已留出毫秒级的 `retryAfter` 参数。后续在 `callLlm()` 里把 HTTP `Retry-After` 响应头换算成毫秒挂到错误对象上，就能直接优先遵守服务端等待时间。
 
 ---
 
-出错后要不要再试、试过几次、用过哪些办法，这些信息需要在循环的多轮之间保存。`RecoveryState` 把它们集中放在一个对象里：是否已经提高过输出上限、已经续写了几次、连续遇到几次服务器过载、是否已经做过应急压缩、当前用的是哪个模型。每次用户提问会新建一个，所以这些计数只在一次提问内有效。这一步只是定义，还没有用到。
+出错后要不要重试、已经续写了几次、连续遇到多少次过载、当前切到哪个模型，这些信息要在多轮循环之间保持。`RecoveryState` 把它们统一收在一个对象里，每次用户提问新建一份，作用域清晰可控。这一步只先定义类，暂未接进循环。
 
 本次代码变化：10 行。
 
@@ -21053,7 +20872,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-遇到限流或服务器繁忙，马上重试多半还是失败，应该等一会儿。`retryDelay` 计算等待时间：第一次 0.5 秒，之后每次翻倍，最长 32 秒，这叫指数退避。再加上最多 25% 的随机量，避免很多客户端在同一时刻一起重试。如果服务器明确告诉了要等多久，就按服务器说的来。`sleep` 负责真正等待，`setSleepFn` 让测试可以把它换成不等待的版本。
+撞上限流或服务繁忙时，立刻重发往往继续撞墙。`retryDelay` 实现指数退避：首次 0.5 秒，每次翻倍，最高封顶 32 秒，再叠 0% 到 25% 的随机抖动防止多个客户端同时重试；若传入服务端指定的 `retryAfter`（毫秒），则直接采用。`setSleepFn` 让单测能替换掉真实定时器，跑测试无需干等。
 
 本次代码变化：13 行。
 
@@ -21723,7 +21542,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`withRetry` 接收一个函数并执行它，成功就返回结果。失败时看错误信息：如果是 429 或“rate limit”这类限流错误，就等一会儿再执行一次，最多 10 次。其他错误不属于“等一等就会好”的情况，原样抛出，交给外层处理。它不关心函数里面做了什么，所以可以包住任何一次模型调用。
+`withRetry` 接收一个异步请求函数 `fn` 和状态对象 `state`：成功就清零连续 `529` 计数并返回结果；失败时若命中 `429` 或 `rate limit`，就退避等待后继续尝试，最多 10 次。其余非瞬态错误不做吞没，原样抛给外层循环决定怎么处理。
 
 本次代码变化：21 行。
 
@@ -22414,7 +22233,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-现在在 loop 里用上它。循环开始前新建一个 `RecoveryState`，调用模型的那一行用 `withRetry` 包起来。调用时多传两个参数：`model` 来自状态对象，目前是 `null`，表示用默认模型；`maxTokens` 是输出长度上限，默认 8000。另外，返回值改为保存整个 `choice`，因为后面要读其中的 `finish_reason` 来判断输出有没有被截断。从这一步起，偶尔的限流不会再让对话中断。
+现在把 `withRetry` 接进 `agentLoop`。循环开始前新建 `RecoveryState` 和默认 8000 的 `maxTokens`，调用 `callLlm` 时传入 `model: state.currentModel` 和 `maxTokens`。返回值也改成完整的 `choice`，方便后面读取 `choice.finish_reason`。从这一步起，偶发限流不会再打断对话。
 
 本次代码变化：18 行。
 
@@ -23125,7 +22944,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-s08 已经处理过“prompt too long”：应急压缩后重试。这里改用状态对象来记录，去掉原来单独的计数器，规则更明确：一次提问内只做一次应急压缩。同时改变最后的处理方式：遇到确实无法恢复的错误，不再抛出异常让整个程序退出，而是把错误信息作为这一轮的回答返回给用户，对话还可以继续。
+`s08` 里的应急压缩原本靠局部变量 `reactiveRetries` 计数，现在统一收进 `state.attemptedReactiveCompact`，明确每次提问只做一次应急压缩。同时改进兜底出口：遇到确实无法恢复的错误，不再直接抛异常把整个 CLI 进程炸掉，而是返回 `[Error] ...` 让对话体面继续。
 
 本次代码变化：9 行。
 
@@ -23829,7 +23648,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-529 表示服务器过载，和限流一样需要等待后重试，但它可能持续很久。所以多做一件事：在状态里累计连续过载的次数，达到 3 次并且环境变量 `FALLBACK_MODEL_ID` 配置了备用模型，就把 `state.currentModel` 换成它。上一步已经把这个字段传给了 `callLlm`，所以下一次重试会自动使用备用模型。只要有一次调用成功，计数就清零。
+`529` 表示服务端过载，有时会持续几分钟。我们在 `withRetry` 里识别 `isOverloaded`，每次失败递增 `state.consecutive529`。如果连续 3 次过载且环境变量 `FALLBACK_MODEL_ID` 配了备用模型，就把 `state.currentModel` 切过去并重置计数，下一轮重试自动走备用模型；只要有一次请求成功，计数也会清零。
 
 本次代码变化：12 行。
 
@@ -24545,7 +24364,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-模型的回答有长度上限，写到一半被截断时，`finish_reason` 是 `"length"`。分两步处理。第一次遇到：把上限从 8000 提高到 64000，原样重新请求一次。如果还是被截断：把已经写出的部分保存到 `messages`，再加一条消息让模型“直接接着写，不要道歉，不要重复”，最多续写 3 次。超过次数就把现有内容返回。三种恢复办法到这里都齐了，提示符改成 `s11 >> `。
+当 `choice.finish_reason === "length"` 时，说明模型没说完但输出额度用尽了。我们分两步救场：第一次先把 `maxTokens` 从 8000 提到 64000 原样重发（不保存残缺回答）；升过上限还被截断，才把已有文本存入 `messages`，追加 `CONTINUATION_PROMPT` 让模型接着写，最多续写 3 次。顺手把提示符切到 `s11 >> `。
 
 本次代码变化：21 行。
 
@@ -25282,7 +25101,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后补两行日志。切换到备用模型时打印一行，说明连续过载了几次、换成了哪个模型；遇到无法恢复的错误时，用 `console.error` 打印原因。恢复过程大多是自动的，有了这两行，出问题时至少知道程序做了什么决定。
+最后补上两行关键日志：连续 `529` 切换备用模型时打印切换信息，遇到不可恢复错误时用 `console.error` 输出原因。恢复机制大多在后台自动触发，留出这两行日志，出问题时才能迅速看清程序做过什么决策。
 
 本次代码变化：2 行。
 
@@ -25292,17 +25111,19 @@ if (isMainModule(import.meta.url)) {
 请输出一份尽可能详细的 80 步 agent 开发计划；如果输出被截断，请继续，不要从头重复。
 ```
 
-自然 prompt 不一定触发 `429` 或 `529`，但可能触发 `finish_reason: "length"`。测试文件通过模拟响应稳定覆盖限流、过载、截断和上下文超限分支。
+自然对话不一定刚好撞上 `429` 或 `529`，但超长回答容易触发 `finish_reason: "length"` 的提额与续写分支。限流退避、连续 `529` 切备用模型、上下文超限应急压缩以及不可恢复错误的安全返回，都可以通过下面的离线单测稳定覆盖。
 
 ### 扩展阅读：商业级 Agent 怎么做错误恢复
 
-商业级 agent 通常按失败发生的阶段决定恢复动作，而不是用一个大 `try/catch` 处理所有问题：
+商业级 Agent 通常按失败发生的阶段决定恢复动作，而不会用一个大 `try/catch` 笼统处理所有异常：
 
-- Claude Code 会区分模型请求、工具执行、权限确认和上下文管理；不同阶段的失败需要不同恢复方式。
-- Codex 的 turn loop 同时跟踪 provider、sandbox、approval、持久会话和 compaction 状态，因此能判断应该重试请求、恢复会话还是返回工具错误。
-- OpenCode 把 provider 调用、工具注册、session 事件和上下文处理分开，错误可以归属到具体阶段。
+- **Claude Code**：区分模型请求、工具执行、权限确认和上下文管理等环节，不同阶段的故障走各自的恢复或回退策略。参考 [Claude Code 文档](https://code.claude.com/docs/en/overview)。
+- **Codex**：turn loop 显式维护 provider、sandbox、approval、会话持久化与 compaction 状态，能准确判断该重试请求、恢复会话还是把工具报错交回模型。参考 [Codex 开源代码](https://github.com/openai/codex/tree/main/codex-rs/core)。
+- **opencode**：把 provider 调用、工具注册、session 事件和上下文管理拆层隔离，让每类错误都能归属到具体执行环节。参考 [OpenCode session 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session)。
 
-可继续阅读：[Claude Code 文档](https://code.claude.com/docs/en/overview)、[Codex 开源代码](https://github.com/openai/codex/tree/main/codex-rs/core)、[OpenCode session 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session)。本章的 `RecoveryState` 是这些机制的最小教学版。
+**把恢复状态收进显式对象、给每条故障路径设好熔断上限，Agent 才敢在真实网络里长时间自动运行。**
+
+> **本章思考题**：到这里，单个会话里的 Agent 已经很抗造了。但回头看 `s05` 的 `todo_write`，那份清单只活在内存里，进程一退就消失，也描述不了“任务 B 必须等任务 A 完成后才能认领”的先后依赖。要让大型工程跨会话推进，怎么把计划持久化成一张带依赖的任务图？下一章 `s12` 我们来做 Task System。
 
 ```js ! agent.js range=398:662
 import {
@@ -38500,11 +38321,11 @@ LLM 调用工具并输出结果
 
 ---
 
-cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主线关系不大，所以放在 `helper.js` 里：`validateCron` 检查表达式是否合法，`cronMatches` 判断某个时间点是否符合表达式。这一步把它们引入进来。另外 `loadTask` 不再提前检查文件是否存在，`get_task` 改用 `try/catch` 处理找不到任务的情况。
+cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主线关系不大，所以放在 `helper.js` 里：`validateCron` 检查表达式是否合法，`cronMatches` 判断某个时间点是否符合表达式。这一步把它们引入进来。
 
-本次代码变化：14 行。
+本次代码变化：3 行。
 
-```js ! agent.js range=14:361
+```js ! agent.js range=14:33
 import {
   readdirSync,
   readFileSync,
@@ -38784,6 +38605,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -38804,11 +38626,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -38822,6 +38646,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -38851,13 +38676,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-// !focus(start)
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
-// !focus(end)
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -39484,7 +39304,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：20 行。
 
-```js ! agent.js range=444:481
+```js ! agent.js range=445:482
 import {
   readdirSync,
   readFileSync,
@@ -39762,6 +39582,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -39782,11 +39603,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -39800,6 +39623,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -39829,11 +39653,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -40482,7 +40303,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：14 行。
 
-```js ! agent.js range=464:495
+```js ! agent.js range=465:496
 import {
   readdirSync,
   readFileSync,
@@ -40760,6 +40581,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -40780,11 +40602,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -40798,6 +40622,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -40827,11 +40652,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -41494,7 +41316,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：15 行。
 
-```js ! agent.js range=477:833
+```js ! agent.js range=478:834
 import {
   readdirSync,
   readFileSync,
@@ -41772,6 +41594,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -41792,11 +41615,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -41810,6 +41635,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -41839,11 +41665,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -42525,7 +42348,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：32 行。
 
-```js ! agent.js range=477:867
+```js ! agent.js range=478:868
 import {
   readdirSync,
   readFileSync,
@@ -42803,6 +42626,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -42823,11 +42647,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -42841,6 +42667,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -42870,11 +42697,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -43590,7 +43414,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：23 行。
 
-```js ! agent.js range=488:1078
+```js ! agent.js range=489:1079
 import {
   readdirSync,
   readFileSync,
@@ -43868,6 +43692,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -43888,11 +43713,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -43906,6 +43733,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -43935,11 +43763,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -44676,7 +44501,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：17 行。
 
-```js ! agent.js range=506:974
+```js ! agent.js range=507:975
 import {
   readdirSync,
   readFileSync,
@@ -44954,6 +44779,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -44974,11 +44800,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -44992,6 +44820,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -45021,11 +44850,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -45777,7 +45603,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：32 行。
 
-```js ! agent.js range=522:1124
+```js ! agent.js range=523:1125
 import {
   readdirSync,
   readFileSync,
@@ -46055,6 +45881,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -46075,11 +45902,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -46093,6 +45922,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -46122,11 +45952,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -46912,7 +46739,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：17 行。
 
-```js ! agent.js range=468:1135
+```js ! agent.js range=469:1136
 import {
   readdirSync,
   readFileSync,
@@ -47190,6 +47017,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -47210,11 +47038,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -47228,6 +47058,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -47257,11 +47088,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -48078,7 +47906,7 @@ Schedule a task to print the current date every 1 minutes
 
 所以可以这样理解本章的位置：`s14` 先把 agent runtime 里的调度闭环讲清楚；如果要做成真正可靠的产品，再把 `cronTick` 这一层替换成系统调度器、云调度器或桌面 App 的 automation 服务。……
 
-```js ! agent.js range=433:1155
+```js ! agent.js range=434:1156
 import {
   readdirSync,
   readFileSync,
@@ -48356,6 +48184,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -48376,11 +48205,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -48394,6 +48225,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -48423,11 +48255,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -49342,7 +49171,7 @@ s06 的子代理做完就消失，只留下一段总结。本章的队友不一�
 
 本次代码变化：10 行。
 
-```js ! agent.js range=1:604
+```js ! agent.js range=1:605
 import {
   readdirSync,
   readFileSync,
@@ -49623,6 +49452,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -49643,11 +49473,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -49661,6 +49493,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -49690,11 +49523,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -50505,7 +50335,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：7 行。
 
-```js ! agent.js range=586:610
+```js ! agent.js range=587:611
 import {
   readdirSync,
   readFileSync,
@@ -50784,6 +50614,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -50804,11 +50635,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -50822,6 +50655,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -50851,11 +50685,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -51673,7 +51504,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：20 行。
 
-```js ! agent.js range=594:976
+```js ! agent.js range=595:977
 import {
   readdirSync,
   readFileSync,
@@ -51952,6 +51783,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -51972,11 +51804,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -51990,6 +51824,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -52019,11 +51854,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -52865,7 +52697,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：13 行。
 
-```js ! agent.js range=594:624
+```js ! agent.js range=595:625
 import {
   readdirSync,
   readFileSync,
@@ -53144,6 +52976,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -53164,11 +52997,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -53182,6 +53017,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -53211,11 +53047,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -54064,7 +53897,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：31 行。
 
-```js ! agent.js range=604:652
+```js ! agent.js range=605:653
 import {
   readdirSync,
   readFileSync,
@@ -54343,6 +54176,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -54363,11 +54197,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -54381,6 +54217,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -54410,11 +54247,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -55294,7 +55128,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：32 行。
 
-```js ! agent.js range=635:684
+```js ! agent.js range=636:685
 import {
   readdirSync,
   readFileSync,
@@ -55573,6 +55407,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -55593,11 +55428,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -55611,6 +55448,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -55640,11 +55478,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -56556,7 +56391,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：9 行。
 
-```js ! agent.js range=670:1054
+```js ! agent.js range=671:1055
 import {
   readdirSync,
   readFileSync,
@@ -56835,6 +56670,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -56855,11 +56691,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -56873,6 +56711,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -56902,11 +56741,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -57831,7 +57667,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：5 行。
 
-```js ! agent.js range=1112:1263
+```js ! agent.js range=1113:1264
 import {
   readdirSync,
   readFileSync,
@@ -58110,6 +57946,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -58130,11 +57967,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -58148,6 +57987,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -58177,11 +58017,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -59128,7 +58965,7 @@ Codex 当前公开文档更强调 subagents：它可以按你的明确要求并�
 
 opencode 把 agent 分成 primary agent 和 subagent：primary agent 可以切换，subagent 可以由主 agent 自动调用，也可以用 `@` 手动点名。它内置了 Build、Plan、General、Explore、Scout 等角色，并支持给 agent 配模型、prompt 和权限。它更像“可配置角色 + 子会话导航”，不是 Claude Code 那种完整 teammate team。参考：[opencode Agents](https://opencode.ai/docs/agents/)。
 
-```js ! agent.js range=17:694
+```js ! agent.js range=17:695
 import {
   readdirSync,
   readFileSync,
@@ -59410,6 +59247,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -59430,11 +59268,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -59448,6 +59288,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -59477,11 +59318,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -60496,7 +60334,7 @@ s15 的消息只有一段文字，收到回复时分不清它回的是哪一次�
 
 本次代码变化：12 行。
 
-```js ! agent.js range=583:715
+```js ! agent.js range=584:716
 import {
   readdirSync,
   readFileSync,
@@ -60776,6 +60614,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -60796,11 +60635,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -60814,6 +60655,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -60843,11 +60685,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -61786,7 +61625,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：26 行。
 
-```js ! agent.js range=695:1097
+```js ! agent.js range=696:1098
 import {
   readdirSync,
   readFileSync,
@@ -62066,6 +61905,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -62086,11 +61926,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -62104,6 +61946,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -62133,11 +61976,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -63102,7 +62942,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：26 行。
 
-```js ! agent.js range=600:694
+```js ! agent.js range=601:695
 import {
   readdirSync,
   readFileSync,
@@ -63382,6 +63222,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -63402,11 +63243,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -63420,6 +63263,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -63449,11 +63293,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -64440,7 +64281,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：13 行。
 
-```js ! agent.js range=644:690
+```js ! agent.js range=645:691
 import {
   readdirSync,
   readFileSync,
@@ -64720,6 +64561,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -64740,11 +64582,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -64758,6 +64602,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -64787,11 +64632,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -65789,7 +65631,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：26 行。
 
-```js ! agent.js range=715:1225
+```js ! agent.js range=716:1226
 import {
   readdirSync,
   readFileSync,
@@ -66069,6 +65911,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -66089,11 +65932,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -66107,6 +65952,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -66136,11 +65982,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -67158,7 +67001,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：21 行。
 
-```js ! agent.js range=629:790
+```js ! agent.js range=630:791
 import {
   readdirSync,
   readFileSync,
@@ -67438,6 +67281,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -67458,11 +67302,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -67476,6 +67322,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -67505,11 +67352,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -68548,7 +68392,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：28 行。
 
-```js ! agent.js range=775:1183
+```js ! agent.js range=776:1184
 import {
   readdirSync,
   readFileSync,
@@ -68828,6 +68672,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -68848,11 +68693,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -68866,6 +68713,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -68895,11 +68743,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -69964,7 +69809,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：11 行。
 
-```js ! agent.js range=657:1410
+```js ! agent.js range=658:1411
 import {
   readdirSync,
   readFileSync,
@@ -70244,6 +70089,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -70264,11 +70110,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -70282,6 +70130,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -70311,11 +70160,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -71413,7 +71259,7 @@ Codex 的公开文档更偏向 subagents。Codex 会负责 spawn、等待、汇�
 
 opencode 把 agent 分成 primary agent 和 subagent，可以用配置定义角色、模型、权限和 prompt，也可以通过 `@agent` 方式点名。它更像“角色化代理 + 权限控制”，协议层可以放在 agent prompt 和工具约定里实现。参考：[opencode Agents](https://opencode.ai/docs/agents/)。
 
-```js ! agent.js range=586:826
+```js ! agent.js range=587:827
 import {
   readdirSync,
   readFileSync,
@@ -71693,6 +71539,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -71713,11 +71560,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -71731,6 +71580,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -71760,11 +71610,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -72924,7 +72771,7 @@ allTools() -> call LLM -> tool_calls
 
 本次代码变化：4 行。
 
-```js ! agent.js range=1006:1027
+```js ! agent.js range=1007:1028
 import {
   readdirSync,
   readFileSync,
@@ -73204,6 +73051,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -73224,11 +73072,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -73242,6 +73092,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -73271,11 +73122,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -74353,7 +74201,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：16 行。
 
-```js ! agent.js range=1010:1043
+```js ! agent.js range=1011:1044
 import {
   readdirSync,
   readFileSync,
@@ -74633,6 +74481,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -74653,11 +74502,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -74671,6 +74522,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -74700,11 +74552,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -75798,7 +75647,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：28 行。
 
-```js ! agent.js range=1014:1059
+```js ! agent.js range=1015:1060
 import {
   readdirSync,
   readFileSync,
@@ -76078,6 +75927,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -76098,11 +75948,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -76116,6 +75968,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -76145,11 +75998,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -77271,7 +77121,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：32 行。
 
-```js ! agent.js range=1042:1091
+```js ! agent.js range=1043:1092
 import {
   readdirSync,
   readFileSync,
@@ -77551,6 +77401,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -77571,11 +77422,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -77589,6 +77442,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -77618,11 +77472,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -78776,7 +78627,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：24 行。
 
-```js ! agent.js range=1081:1128
+```js ! agent.js range=1082:1129
 import {
   readdirSync,
   readFileSync,
@@ -79056,6 +78907,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -79076,11 +78928,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -79094,6 +78948,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -79123,11 +78978,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -80307,7 +80159,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：25 行。
 
-```js ! agent.js range=419:1331
+```js ! agent.js range=420:1332
 import {
   readdirSync,
   readFileSync,
@@ -80587,6 +80439,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -80607,11 +80460,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -80625,6 +80480,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -80654,11 +80510,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -81867,7 +81720,7 @@ if (isMainModule(import.meta.url)) {
 
 本次代码变化：17 行。
 
-```js ! agent.js range=1001:1520
+```js ! agent.js range=1002:1521
 import {
   readdirSync,
   readFileSync,
@@ -82147,6 +82000,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -82167,11 +82021,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -82185,6 +82041,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -82214,11 +82071,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
@@ -83454,7 +83308,7 @@ if (isMainModule(import.meta.url)) {
 
 参考：[MCP tool schema](https://modelcontextprotocol.io/specification/2025-11-25/schema)、[Claude Code MCP](https://code.claude.com/docs/en/mcp)、[Codex MCP support](https://github.com/openai/codex/blob/main/codex-rs/README.md)、[OpenCode MCP servers](https://opencode.ai/docs/mcp-servers)。
 
-```js ! agent.js range=1474:1557
+```js ! agent.js range=1475:1558
 import {
   readdirSync,
   readFileSync,
@@ -83734,6 +83588,7 @@ function saveTask(task) {
   writeFileSync(taskPath(task.id), JSON.stringify(task, null, 2));
 }
 function loadTask(id) {
+  if (!existsSync(taskPath(id))) return null;
   return JSON.parse(readFileSync(taskPath(id), "utf8"));
 }
 
@@ -83754,11 +83609,13 @@ export function listTasks() {
 
 export function canStart(id) {
   const task = loadTask(id);
+  if (!task) return false;
   return task.blockedBy.every((dep) => existsSync(taskPath(dep)) && loadTask(dep).status === "completed");
 }
 
 export function claimTask(id, owner = "agent") {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "pending") return `Task ${id} is ${task.status}, cannot claim`;
   if (!canStart(id)) {
     const deps = task.blockedBy.filter((d) => !existsSync(taskPath(d)) || loadTask(d).status !== "completed");
@@ -83772,6 +83629,7 @@ export function claimTask(id, owner = "agent") {
 
 export function completeTask(id) {
   const task = loadTask(id);
+  if (!task) return `Error: Task ${id} not found`;
   if (task.status !== "in_progress") return `Task ${id} is ${task.status}, cannot complete`;
   task.status = "completed";
   saveTask(task);
@@ -83801,11 +83659,8 @@ function runListTasks() {
     .join("\n");
 }
 function runGetTask({ task_id }) {
-  try {
-    return JSON.stringify(loadTask(task_id), null, 2);
-  } catch {
-    return `Error: Task ${task_id} not found`;
-  }
+  const task = loadTask(task_id);
+  return task ? JSON.stringify(task, null, 2) : `Error: Task ${task_id} not found`;
 }
 
 let bgCounter = 0;
