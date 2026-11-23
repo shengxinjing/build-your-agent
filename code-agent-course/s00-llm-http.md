@@ -4,7 +4,7 @@
 
 ## 问题
 
-大模型不在本地运行，而且本身没有记忆。每次对话，程序都必须把请求地址、API Token、模型名和完整的历史 `messages` 数组一起通过 HTTP 发过去，才能拿回它的回答。
+大模型不在本地运行，而且本身没有记忆。每次发 HTTP 请求，程序需要把 API Token 放进 `Authorization` 请求头，再把模型名和历史 `messages` 数组放进 JSON 请求体发给对应接口。本章靠每次重发完整 `messages` 数组来维持多轮上下文。
 
 ## 解决方案
 
@@ -12,12 +12,11 @@
 
 ## 流程图
 
-```text
-终端输入
-   ↓  runChatCli 追加进 messages
-ask(messages)
-   ↓  callLlm 发送 POST /chat/completions
-取出 choice.message.content 打印回复
+```mermaid
+flowchart TD
+  IN["终端输入问题"] --> CLI["runChatCli<br/>追加进 messages"]
+  CLI --> ASK["ask(messages)<br/>callLlm 发 POST 请求"]
+  ASK --> OUT["取出 message.content 打印"]
 ```
 
 ## 测试 Prompt
@@ -30,11 +29,15 @@ ask(messages)
 
 ## 本地运行与测试
 
-在浏览器里可以直接点右上角运行按钮；如果在本地终端运行：
+在浏览器里滚到本章最后一帧，点右上角运行按钮即可试玩；如果要在本地终端跑真实模型，先复制 [.env.local.example](.env.local.example) 为 `.env.local` 并填好 `LLM_PROVIDER` 与 `LLM_API_TOKEN`。从仓库根目录进入课程目录运行交互 CLI：
 
 ```bash
-cd code-agent-course
-node s00-llm-http.js
+cd code-agent-course && node s00-llm-http.js
+```
+
+在仓库根目录跑离线单测（无需 API Token）：
+
+```bash
 pnpm vitest run code-agent-course/s00-llm-http.test.js
 ```
 
@@ -70,7 +73,7 @@ pnpm vitest run code-agent-course/s00-llm-http.test.js
 
 ### 3. 接到命令行
 
-新增 `main()`，把 `ask` 挂到 `runChatCli` 的 `onPrompt` 回调上。每次你在终端输入一句话回车，`runChatCli` 都会把你的问题和模型回复按顺序推进同一个 `messages` 数组，整包重发给模型，多轮上下文就接上了。
+新增 `main()`，把 `ask` 挂到 `runChatCli` 的 `onPrompt` 回调上。每次你在终端输入一句话回车，`runChatCli` 都会把问题和模型回复按顺序推进同一个 `messages` 数组再整包重发。这一帧只定义了 `main()`，下一步加上启动守卫后运行才会出现 `prompt >> `。
 
 ```diff agent-step
 @@
@@ -87,7 +90,7 @@ pnpm vitest run code-agent-course/s00-llm-http.test.js
 
 ### 4. 加上启动守卫
 
-最后用 `isMainModule` 包住 `main()`：只有直接运行当前文件时才启动命令行，跑单测 `import { ask }` 时不会卡住等待输入。现在填好 API Token 点右上角运行，就能和模型对话了（输入 `q` 或 `exit` 退出）。
+最后用 `isMainModule` 包住 `main()`：只有直接运行当前文件时才启动命令行，跑单测 `import { ask }` 时不会卡住等待输入。现在填好 API Token 点右上角运行按钮，看到 `prompt >> ` 就能和模型对话了（输入 `q` 或 `exit` 退出）。
 
 > **本章思考题**：试着问它：“当前目录下有哪些 JS 文件？”你会发现它只会教你敲 `ls`，自己却动不了手。不想每次都人工复制命令、粘贴结果当“传话筒”，代码里还得加哪两样东西？下一章 `s01` 我们直接加上。
 

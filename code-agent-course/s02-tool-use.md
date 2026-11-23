@@ -16,20 +16,20 @@
 
 ## 解决方案
 
-我们把工具拆成名字一一对齐的两张表，并配齐读写改查 5 件套（`helper.js` 里的文件函数已内置 `safeJoin` 防止路径越界）：
+我们把工具拆成名字一一对齐的两张表，并配齐读写改查 5 件套（`helper.js` 里的文件函数会先用 `safeJoin` 检查解析后的路径是否仍在工作目录下）：
 
 ```mermaid
 flowchart TD
   U["用户提问"] --> M["messages"]
   M --> L["LLM"]
-  L --> Q{"有 tool_calls 吗？"}
-  Q -->|没有| R["返回结果"]
-  Q -->|有| H["handlers[call.function.name] 查表"]
-  subgraph NEW["s02 工具箱（5 件套）"]
-    H --> T1["bash · glob"]
-    H --> T2["read_file · write_file · edit_file"]
+  L --> Q{"有 tool_calls？"}
+  Q -->|没有| R["返回最终文本"]
+  Q -->|有| H["handlers[name] 查表"]
+  subgraph BOX["s02 工具箱（5 件套）"]
+    H --> T["bash · glob<br/>read_file · write_file · edit_file"]
   end
-  T1 & T2 --> OUT["包装成 tool 消息"] --> M
+  T --> OUT["结果包装为 tool 消息"]
+  OUT --> M
 ```
 
 `agentLoop` 只管拿 `call.function.name` 去 `handlers` 里查函数：查到就传参执行，查不到就返回 `"Unknown tool: ..."`。
@@ -37,10 +37,10 @@ flowchart TD
 ## 测试 Prompt
 
 ```text
-创建 s02-tmp-note.txt，写入 hello s02，然后读出来确认内容。
+用 write_file 创建 s02-tmp-note.txt 并写入 hello s02，再用 read_file 读出来确认内容。
 ```
 
-终端会依次打印 `> write_file:` 和 `> read_file:`，不再绕弯拼 shell 命令。
+当模型按要求调用这两个文件工具时，终端会依次打印 `> write_file:` 和 `> read_file:`，不再绕弯拼 shell 命令。
 
 ## 扩展阅读：商业级 Agent 怎么做工具扩展
 
@@ -48,24 +48,30 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  IN["模型一次返回 5 个工具调用<br/>read A · glob · bash ls · write B · read C"]
+  IN["模型一次返回 5 个调用<br/>read A · glob · bash ls · write B · read C"]
   IN --> T1
   IN --> C1
-  subgraph TEACH["教学版：按顺序串行执行"]
+  subgraph TEACH["教学版：顺序串行"]
     T1["1. read A"] --> T2["2. glob"] --> T3["3. bash ls"] --> T4["4. write B"] --> T5["5. read C"]
   end
-  subgraph CC["Claude Code：只读并发、写操作串行"]
+  subgraph CC["商业 Agent 示意：只读并发、写串行"]
     C1["Batch 1 并发<br/>read A · glob · bash ls"] --> C2["Batch 2 串行<br/>write B"] --> C3["Batch 3 并发<br/>read C"]
   end
 ```
 
-教学版统一按顺序串行跑，最稳妥好懂；而像 Claude Code 会把连续的只读调用打包并发提速，遇到写文件再切回串行防冲突。
+教学版统一按顺序串行执行，最稳妥好懂。而在生产级设计（例如 Claude Code 等产品）中，通常会把可安全并行的只读调用打包并发提速，遇到写操作再切回串行防冲突，上图展示的就是这种分批调度示意。
 
 ## 本地运行与测试
 
+交互运行（从仓库根目录执行）：
+
 ```bash
-cd code-agent-course
-node s02-tool-use.js
+cd code-agent-course && node s02-tool-use.js
+```
+
+离线单测（在仓库根目录执行，无需 API Token）：
+
+```bash
 pnpm vitest run code-agent-course/s02-tool-use.test.js
 ```
 
@@ -194,7 +200,7 @@ pnpm vitest run code-agent-course/s02-tool-use.test.js
 
 按同样的套路补齐局部替换 `edit_file` 和搜文件 `glob`，再把命令行提示符改成 `"s02 >> "`，开发五件套正式配齐！
 
-> **本章思考题**：工具配齐后，Agent 干活利索多了，但闯祸半径也跟着变大了。万一你随口说句“清理一下项目”，模型调 `bash` 跑起 `rm -rf /` 甚至误删重要文件，现在的循环可是拿来就执行的！怎么在不破坏查表结构的前提下加一道“权限门”？下一章 `s03` 我们接着改。
+> **本章思考题**：工具配齐后，Agent 干活利索多了，但闯祸半径也跟着变大了。虽然 `helper.js` 的 `runBash` 里临时硬编码了几条极端黑名单，但万一你随口说句“清理一下项目”，模型调 `bash` 跑起 `rm notes.txt`，现在的循环还是拿来就执行，连问都不问一声。怎么在不破坏查表结构的前提下，在工具执行前加一道分级“权限门”？下一章 `s03` 我们接着改。
 
 ```diff agent-step
 @@
@@ -235,7 +241,7 @@ pnpm vitest run code-agent-course/s02-tool-use.test.js
 ```diff
 --- s01-agent-loop.js
 +++ s02-tool-use.js
-@@ -1,50 +1,75 @@
+@@
  import {
    callLlm,
    runBash,

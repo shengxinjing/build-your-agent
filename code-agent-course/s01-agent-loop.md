@@ -30,7 +30,7 @@ flowchart TD
 列出当前目录下所有 JavaScript 文件，并告诉我一共有多少个。
 ```
 
-你会看到终端先打印 `$ ls ...` 或 `$ find ...` 的真实执行结果，再给出准确数量。
+你会看到终端先打印执行的命令与输出预览（最多显示前 500 字符），前提是模型决定调用 `bash` 查目录；随后循环把完整输出回灌给模型，整理出文件列表和数量。
 
 ## 扩展阅读：商业级 Agent 怎么做主循环
 
@@ -44,9 +44,15 @@ flowchart TD
 
 ## 本地运行与测试
 
+交互运行（从仓库根目录执行）：
+
 ```bash
-cd code-agent-course
-node s01-agent-loop.js
+cd code-agent-course && node s01-agent-loop.js
+```
+
+离线单测（在仓库根目录执行，无需 API Token）：
+
+```bash
 pnpm vitest run code-agent-course/s01-agent-loop.test.js
 ```
 
@@ -106,7 +112,7 @@ pnpm vitest run code-agent-course/s01-agent-loop.test.js
 
 ### 4. 搭起 agentLoop 骨架
 
-搭起 `agentLoop` 外层循环：每次调 `callLlm` 时把 `SYSTEM` 和 `bashTool` 一起传过去。如果返回的 `message.tool_calls` 为空，说明模型不需要调工具，直接返回文本退出循环。
+搭起 `agentLoop` 外层循环：每次调 `callLlm` 时把 `SYSTEM` 和 `bashTool` 一起传过去，如果返回的 `message.tool_calls` 为空就直接返回文本退出。这一帧先把循环外壳和无工具时的退出分支立住（CLI 入口仍在走旧的 `ask`），下一帧补上工具执行与结果回填就能跑通闭环。
 
 ```diff agent-step
 @@
@@ -185,7 +191,7 @@ pnpm vitest run code-agent-course/s01-agent-loop.test.js
 ```diff
 --- s00-llm-http.js
 +++ s01-agent-loop.js
-@@ -1,16 +1,50 @@
+@@
  import {
    callLlm,
 +  runBash,
