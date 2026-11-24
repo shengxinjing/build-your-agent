@@ -98,18 +98,18 @@ Every chapter with its own JS file (s00–s17) splits its code change into sever
 
 ### Articles
 
-Markdown is Chinese, friendly to beginners, in plain wording (prefer "write to a file" over vaguer terms). Recommended chapter structure for polished scrollytelling chapters (`s00`–`s11`, and subsequent rewrites):
+Markdown is Chinese, friendly to beginners, in plain wording (prefer "write to a file" over vaguer terms). Standard chapter structure for scrollytelling chapters (`s00`–`s17`; `s00` is the first chapter so it omits `## 扩展阅读` and has no previous-chapter diff):
 
 1. Opening lead: what new ability this chapter adds and why it matters now.
 2. `## 问题`: the concrete pain point in plain terms.
 3. `## 解决方案` (with an inline ` ```mermaid ` flow diagram, or a dedicated `## 流程图` section).
-4. `## 测试 Prompt`: one prompt that triggers the new feature plus expected behavior.
-5. `## 扩展阅读：...`: how commercial agents (Claude Code, Codex, opencode) solve the same problem.
+4. `## 测试 Prompt`: one or two focused prompts that trigger the new feature plus expected behavior.
+5. `## 扩展阅读：...`: how commercial agents (Claude Code, Codex, opencode) solve the same problem (`s01`–`s17`).
 6. `## 本地运行与测试`: standalone `cd code-agent-course && node sXX-...js` (no POSIX-only subshell parentheses) and `pnpm vitest run code-agent-course/sXX-...test.js` in separate blocks.
 7. `## 博客代码演进`: incremental `### N. ...` frames with ` ```diff agent-step ` patches (replacing standalone `新增函数速览` / `关键代码` sections), ending the final frame with a `> **本章思考题**` bridging to the next chapter.
-8. `## 和上一步的关键代码 diff（不含 helper.js）`: key changes without line numbers.
+8. `## 和上一步的关键代码 diff（不含 helper.js）`: key changes without line numbers (`s01`–`s17`).
 
-Unpolished drafts (`s12`–`s17`) may still use legacy headings (`## 本章目标`, `## 新增能力`, `## 新增函数速览`, `## 关键代码`) until rewritten. Course diagrams use inline ` ```mermaid ` blocks rendered client-side by `app/components/mermaid-diagram.tsx`. Do not reintroduce external SVG image links or `asset/dasheng/` images.
+`s18.md` is a single-step further-reading roadmap (no independent `.js` file; rendered via `extractExtensionReading`). Course diagrams use inline ` ```mermaid ` blocks rendered client-side by `app/components/mermaid-diagram.tsx`. Do not reintroduce external SVG image links or `asset/dasheng/` images.
 
 ### Facts that are easy to get wrong
 

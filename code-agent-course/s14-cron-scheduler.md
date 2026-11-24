@@ -1,265 +1,35 @@
-# s14：Cron Scheduler —— 时间也能触发 agent
+# s14：Cron Scheduler - 让时间也能主动唤醒 Agent
 
-有些任务不该一直等用户开口，比如每天早上检查日报、每隔几分钟看一次任务状态。`s14` 给 agent 装一个闹钟：时间到了，系统自动把预设 prompt 送进 agent loop。
+上一章 `s13` 把慢命令放进了后台，但整条循环依然只有等你敲一句话才会启动。很多日常工作不该靠人盯着：比如每天早上巡检项目、每隔几分钟查看一次构建或任务板状态。
 
-这一章对齐 Python 版的核心设计：**scheduler 负责发现到点任务，queue processor 负责在 agent 空闲时自动交付任务。**
+这一章我们给 Agent 装上一个**进程内定时调度器**。**定时调度按三层解耦：`cronTick` 只管按表发现到点任务并入队，`processCronQueue` 在 Agent 空闲时自动唤醒，原有的 `agentLoop` 照常把到点任务当作 `[Scheduled]` 消息处理。**
 
-## 本章目标
+## 问题
 
-有了 s13 的后台任务以后，agent 已经能“慢慢跑”。但它仍然需要用户输入来启动。
+有了后台执行后，Agent 能“慢慢跑”了，却还不能“到点自己跑”。如果把定时逻辑直接硬塞进主循环，既可能和正在进行的交互对话撞车，又容易在无人值守时卡死在终端权限确认上。
 
-`s14` 新增时间触发入口：
+## 解决方案
 
-```text
-cron job 到点
-  |
-  v
-进入 cronQueue
-  |
-  v
-queue processor 自动启动 agentLoop
-  |
-  v
-agent 处理 [Scheduled] prompt
-```
-
-注意：当前实现还是**进程内调度器**，不是操作系统的 cron。只要 `node s14-cron-scheduler.js` 这个进程活着，它就会自动执行到点任务。
-
-## 新增能力
-
-- `schedule_cron`：注册一个定时任务。
-- `list_crons`：列出当前所有定时任务。
-- `cancel_cron`：取消一个定时任务。
-- `cronTick()`：每秒检查哪些任务到点。
-- `cronQueue`：暂存已经到点、等待交付的任务。
-- `processCronQueue()`：agent 空闲时自动消费队列，不等用户下一次输入。
-- durable job：把任务定义写入 `.scheduled_tasks.json`，下次启动时恢复。
-
-## 流程图
+我们复用 `helper.js` 的五段式 cron 解析工具，新增 `schedule_cron`、`list_crons`、`cancel_cron` 三个工具，并在进程内用每秒一次的心跳串起“检测 → 入队 → 空闲交付 → 注入执行”闭环：
 
 ```mermaid
 flowchart TD
   subgraph SCHED["进程内调度器（非系统 crontab，进程退出即停）"]
-    TICK["每秒检查当前时间是否匹配五段式 cron<br/>例如 */5 * * * * · 0 9 * * 1-5"] -->|匹配（同分钟防重，一次性任务自动删除）| Q[("cronQueue")]
+    TICK["cronTick 每秒匹配五段式 cron<br/>如 */5 * * * * · 0 9 * * 1-5"] -->|到点入队（同分钟防重，一次性任务自动删）| Q[("cronQueue")]
   end
-  Q -->|injectCronJobs 注入| M["messages"]
+  Q -->|"空闲时 processCronQueue 唤醒<br/>injectCronJobs 注入 [Scheduled]"| M["messages"]
   M --> P["提示词 + 压缩"] --> L["LLM（带错误恢复）"]
   L --> H["handlers<br/>同步 / 后台工具 · 任务工具<br/>schedule_cron · list_crons · cancel_cron"]
   H -->|工具结果，下一轮| M
-  H -->|durable 任务持久化| F[(".scheduled_tasks.json<br/>重启后自动恢复")]
-```
-```text
-用户要求 schedule_cron
-    |
-    v
-scheduleJob 保存 CronJob
-    |
-    v
-cronTick 每秒检查
-    |
-    v
-到点任务进入 cronQueue
-    |
-    v
-processCronQueue 自动交付
-    |
-    v
-agentLoop 注入 [Scheduled] prompt
-    |
-    v
-LLM 调用工具并输出结果
+  H -->|durable 任务落盘| F[(".scheduled_tasks.json<br/>重启后自动恢复")]
 ```
 
-## 为什么这一步重要
+这套调度机制有四个容易踩坑的细节：
 
-s13 解决的是“工具已经开始后，怎样不阻塞主循环”；s14 解决的是“没有用户输入时，谁来启动一轮工作”。scheduler 只判断时间并入队，queue processor 负责在 agent 空闲时交付，原来的 agent loop 仍负责调用模型和工具。
-
-## 代码入口
-
-- JS：[s14-cron-scheduler.js](./s14-cron-scheduler.js)
-- Test：[s14-cron-scheduler.test.js](./s14-cron-scheduler.test.js)
-
-## CronJob 数据结构
-
-每个 cron 任务本质上都是一个 `CronJob` 对象。Python 原版可以写成这样：
-
-```python
-@dataclass
-class CronJob:
-    id: str
-    cron: str        # "0 9 * * *"（五段式 cron 表达式）
-    prompt: str      # 触发时注入给 Agent 的消息
-    recurring: bool  # True = 周期性，False = 一次性
-    durable: bool    # True = 写入磁盘，跨会话保留
-```
-
-JavaScript 版不额外定义 class，直接保存同形状的普通对象：
-
-```js
-{
-  id: "cron_0001",
-  cron: "0 9 * * *",
-  prompt: "检查任务板",
-  recurring: true,
-  durable: true,
-}
-```
-
-`cron` 字段使用五段式表达式：
-
-```text
-分钟  小时  日  月  星期
- *    *   *   *   *      每分钟
- 0    9   *   *   *      每天早上 9:00
-*/5   *   *   *   *      每 5 分钟
- 0    9   *   *  1-5     工作日早上 9:00
-```
-
-`*/2 * * * *` 的意思是“每个能被 2 整除的分钟触发”，不是“从现在开始等待满 2 分钟再触发”。所以 21:55 注册，21:56 就可能触发。
-
-## 运行
-
-```bash
-node code-agent-course/s14-cron-scheduler.js
-```
-
-可以输入：
-
-```text
-Schedule a task to print the current date every 1 minutes
-```
-
-如果模型创建的是 durable job，它会写入 `.scheduled_tasks.json`。下次启动 s14 时，旧任务会自动恢复，所以你可能刚运行脚本就看到日期输出。要彻底清空历史任务，先退出当前进程，再删除这个文件：
-
-```bash
-rm .scheduled_tasks.json
-```
-
-## 观察日志
-
-这一章的日志故意保留成教学 trace，方便看清楚调度链路：
-
-```text
-[cron register] cron_0000 '* * * * *' → Print the current date...
-[cron fire] cron_0000 → Print the current date...
-[queue processor] delivering scheduled work
-[inject cron] Print the current date...
-[turn 1]
-> bash "date" (fast, sync)
-[tool result] Wed Jul 1 21:55:52 CST 2026
-[assistant] 当前日期是...
-```
-
-这些日志说明四件事：
-
-- `[cron register]`：任务已经注册。
-- `[cron fire]`：时间命中，任务进入队列。
-- `[queue processor]`：系统自动交付队列，不需要用户再输入。
-- `[inject cron]`：到点任务变成一条 `[Scheduled]` 用户消息。
-
-## 新增函数速览
-
-- `cronMatches(expr, date)`：判断某个时间是否命中五段式 cron 表达式；这是纯工具函数，放在 `helper.js`。
-- `validateCron(expr)`：在保存前检查 cron 表达式；这是纯工具函数，放在 `helper.js`。
-- `setCronStorePath(path)` / `resetCron()`：测试入口，替换持久化文件并清空进程内状态。
-- `loadDurableJobs()`：启动时从 `.scheduled_tasks.json` 恢复合法的 durable job。
-- `scheduleJob(cron, prompt, recurring, durable)`：创建定时任务，并决定是否写入 `.scheduled_tasks.json`。
-- `cancelJob(id)` / `listCronJobs()`：取消或列出已注册任务。
-- `cronTick(now)`：每秒扫描任务，把到点任务放入 `cronQueue`。
-- `hasCronQueue()`：判断队列里是否有等待交付的任务。
-- `consumeCronQueue()`：一次性取出队列里的到点任务。
-- `processCronQueue()`：当 agent 空闲且队列里有任务时，自动启动一轮 agent loop。
-- `runInteractiveAgentTurn()`：用户输入也要等待当前定时任务结束，避免两个 agent loop 同时修改共享状态。
-- `runScheduleCron()` / `runListCrons()` / `runCancelCron()`：把 cron 能力包装成模型可调用的工具 handler。
-
-## 关键代码
-
-注册任务时，只保存任务定义，不立刻执行：
-
-```js
-export function scheduleJob(cron, prompt, recurring = true, durable = true) {
-  const err = validateCron(cron);
-  if (err) return err;
-  const job = { id: `cron_${String(cronSeq++).padStart(4, "0")}`, cron, prompt, recurring, durable };
-  scheduledJobs.set(job.id, job);
-  if (durable) saveDurableJobs();
-  console.log(`  [cron register] ${job.id} '${cron}' → ${preview(prompt, 40)}`);
-  return job;
-}
-```
-
-`cronTick()` 只负责发现到点任务，并放进队列：
-
-```js
-export function cronTick(now = new Date()) {
-  const marker = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}`;
-  for (const job of [...scheduledJobs.values()]) {
-    try {
-      if (!cronMatches(job.cron, now)) continue;
-      if (lastFired.get(job.id) !== marker) {
-        cronQueue.push(job);
-        lastFired.set(job.id, marker);
-        console.log(`  [cron fire] ${job.id} → ${preview(job.prompt, 40)}`);
-      }
-      if (!job.recurring) {
-        scheduledJobs.delete(job.id);
-        if (job.durable) saveDurableJobs();
-      }
-    } catch {
-      // 单个坏 job 不拖垮整个调度
-    }
-  }
-}
-```
-
-`lastFired` 用“年-月-日 时:分”作为标记。ticker 虽然每秒检查一次，同一个 job 在同一分钟也只会入队一次；一次性任务入队后会从任务表删除。
-
-queue processor 不等用户下一次输入；只要 agent 空闲，就自动交付到点任务：
-
-```js
-export async function processCronQueue(confirm = async () => "n") {
-  if (cronProcessing || agentRunning || !hasCronQueue()) return false;
-  cronProcessing = true;
-  agentRunning = true;
-  try {
-    if (!hasCronQueue()) return false;
-    console.log("\n  [queue processor] delivering scheduled work");
-    const text = await agentLoop([], confirm);
-    if (text) console.log(text);
-    console.log();
-    return true;
-  } catch (error) {
-    console.error(`[queue processor error] ${error.message}`);
-    return false;
-  } finally {
-    agentRunning = false;
-    cronProcessing = false;
-  }
-}
-```
-
-agent loop 在轮首消费队列，把任务变成普通用户消息：
-
-```js
-function injectCronJobs(messages) {
-  for (const job of consumeCronQueue()) {
-    messages.push({ role: "user", content: `[Scheduled] ${job.prompt}` });
-    console.log(`  [inject cron] ${preview(job.prompt, 50)}`);
-  }
-}
-```
-
-`main()` 把 scheduler 和 queue processor 接起来：
-
-```js
-const ticker = setInterval(() => {
-  cronTick(new Date()); // 独立调度心跳，每秒一次
-  processCronQueue(async () => "n"); // agent 空闲时自动交付到点任务
-}, 1000);
-ticker.unref?.(); // 不阻止进程退出
-```
-
-`ticker.unref()` 表示定时器本身不会强行阻止 Node 退出。交互 CLI 的 readline 仍会让程序保持运行；输入 `q` 退出后，进程内 scheduler 也随之停止。
+- **纯进程内运行，不安装系统 cron**：定时器靠 `setInterval(..., 1000)` + `ticker.unref?.()` 驱动，只在本进程存活时生效，输入 `q` 退出后调度即停止，不会写入操作系统 `crontab`。
+- **五段式 cron 对齐整点分钟**：格式为 `分 时 日 月 周`。`*/2 * * * *` 表示“分钟数能被 2 整除时触发”，不是“从登记起等满 2 分钟”；例如 21:55 登记，21:56 就会触发，且 `lastFired` 按“年-月-日 时:分”防重，同一分钟只入队一次。
+- **互斥锁 + 无人值守默认拒绝**：`agentRunning` 标志让 `processCronQueue()` 与用户输入 `runInteractiveAgentTurn()` 错开执行，避免并发修改共享状态；自动触发时无人看守终端，`confirm` 固定返回 `"n"` 拒绝高危操作。
+- **持久化恢复**：`durable: true` 的任务写入 `.scheduled_tasks.json`，下次启动自动加载。若刚运行脚本就看到日期输出，说明恢复了历史持久任务；退出后执行 `rm .scheduled_tasks.json` 即可清空。
 
 ## 测试 Prompt
 
@@ -267,240 +37,39 @@ ticker.unref?.(); // 不阻止进程退出
 Schedule a task to print the current date every 1 minutes
 ```
 
-观察重点：注册成功后，即使你不再输入，终端也会继续出现 `[cron fire]`、`[queue processor]`、`[inject cron]` 和 `date` 的执行结果。
+注册成功后，什么都不用输入；因为 `* * * * *` 匹配任意分钟且心跳每秒检测一次，在当前分钟的下一次 1 秒心跳（以及之后的每一整分钟）就会自动触发，你可以看到完整的教学日志链：`[cron register]` → `[cron fire]` → `[queue processor]` → `[inject cron]` → `> bash "date"` 自动输出当前时间。测试完毕退出后，若不想下次启动继续触发，记得删除 `.scheduled_tasks.json`。
 
-## 一句话总结
+## 扩展阅读：商业级 Agent 怎么做定时调度
 
-`s14` 让 agent 可以被时间触发：scheduler 负责“什么时候”，queue processor 负责“自动交付”，agent loop 负责“怎么完成”。
+真实产品通常会把“何时唤醒”与“唤醒后做什么”彻底拆开，把进程内心跳替换成常驻守护服务或云端调度器：
 
-## 扩展阅读：真实 Coding Agent 怎么做定时调度
+- **Claude Code**：会话内提供 `/loop` 及 `CronCreate` / `CronList` / `CronDelete` 工具，在运行期间趁空闲低优先级入队；需要脱离当前终端长期可靠运行时，官方建议改用 cloud routines、Desktop scheduled task 或 GitHub Actions。参考 [Claude Code scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks)。
+- **Codex**：Codex App 的 Automations 支持按计划后台运行并将结果送入 review queue，本地运行时依赖机器保持唤醒且应用在线。参考 [Codex Automations](https://openai.com/academy/codex-automations/) 与 [Introducing the Codex app](https://openai.com/index/introducing-the-codex-app/)。
+- **opencode**：核心保持精简，定时能力交给社区插件生态，例如 `opencode-scheduler` 在 macOS 注册 `launchd`、在 Linux 注册 `systemd`。参考 [OpenCode ecosystem](https://opencode.ai/docs/ecosystem/) 与 [opencode-scheduler](https://github.com/different-ai/opencode-scheduler)。
 
-这一章的实现是进程内调度器：Node 进程活着，`cronTick` 才会每秒检查一次；进程退出后，定时检查也会停止。真实产品通常会把“何时唤醒”和“唤醒后让 agent 做什么”拆成两层。
+如果把本章改造成系统级 cron，核心只需换掉 `cronTick` 一层：由系统 `crontab` / `launchd` / `systemd` 每分钟拉起一个独立 runner，读取 `.scheduled_tasks.json`，用 `cronMatches()` 筛出到点任务并执行 `agentLoop`，同时补齐锁文件防重入、环境变量与日志轮转。
 
-- Claude Code：官方文档里有会话内的 `/loop` 和 `CronCreate` / `CronList` / `CronDelete` 工具，用来反复执行 prompt、轮询状态或设置一次性提醒。它的会话内任务会在 Claude Code 运行时由调度器检查，并在 agent 空闲时低优先级入队；如果要脱离当前会话长期可靠运行，文档建议用 cloud routines、Desktop scheduled task 或 GitHub Actions。参考：[Claude Code scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks)。
-- Codex：Codex App 的 Automations 可以按计划在后台运行任务，完成结果进入 review queue，用户再继续检查或跟进。OpenAI 当前说明也提醒：本地运行时，电脑保持唤醒且 Codex App 正在运行最可靠。参考：[Codex Automations](https://openai.com/academy/codex-automations/) 和 [Introducing the Codex app](https://openai.com/index/introducing-the-codex-app/)。
-- OpenCode：核心项目把定时能力交给插件生态。官方 ecosystem 列出的 `opencode-scheduler` 使用 cron 语法，在 macOS 注册 `launchd`，在 Linux 注册 `systemd`。这属于社区插件，不是 OpenCode 主循环内置的 scheduler。参考：[OpenCode ecosystem](https://opencode.ai/docs/ecosystem/) 和 [opencode-scheduler](https://github.com/different-ai/opencode-scheduler)。
+**`s14` 把“发现到点、排队交付、注入循环”的运行时闭环先立住，将来换上系统调度器或云调度器时，主循环一行都不用改。**
 
-所以可以这样理解本章的位置：`s14` 先把 agent runtime 里的调度闭环讲清楚；如果要做成真正可靠的产品，再把 `cronTick` 这一层替换成系统调度器、云调度器或桌面 App 的 automation 服务。
+## 本地运行与测试
 
-### 如果接入系统 cron，大概怎么写
+交互运行（从仓库根目录执行）：
 
-下面只是扩展示例，不是本章正式代码。最小思路是：系统 cron 每分钟启动一次 runner，runner 读取 `.scheduled_tasks.json`，用 `cronMatches()` 判断哪些 job 到点，再把 prompt 注入 agent 执行。
-
-```text
-系统 cron 每分钟唤醒 runner
-  |
-  v
-runner 读取 .scheduled_tasks.json
-  |
-  v
-cronMatches 判断到点任务
-  |
-  v
-agentLoop 执行 [Scheduled] prompt
+```bash
+cd code-agent-course && node s14-cron-scheduler.js
 ```
 
-安装 crontab 的示例：
+离线单测（在仓库根目录执行，无需 API Token）：
 
-```js
-// install-system-cron.js
-import { execSync } from "node:child_process";
-
-function shellQuote(s) {
-  return `'${String(s).replaceAll("'", "'\\''")}'`;
-}
-
-export function installSystemCron() {
-  const cwd = process.cwd();
-  const node = process.execPath;
-  const markerStart = "# build-your-agent:s14:start";
-  const markerEnd = "# build-your-agent:s14:end";
-
-  const line =
-    `* * * * * cd ${shellQuote(cwd)} && ${shellQuote(node)} code-agent-course/s14-cron-runner.js >> .scheduled_tasks.log 2>&1`;
-
-  const oldCrontab = execSync("crontab -l 2>/dev/null || true", { encoding: "utf8" });
-  const cleaned = oldCrontab.replace(
-    new RegExp(`${markerStart}[\\s\\S]*?${markerEnd}\\n?`, "g"),
-    "",
-  );
-
-  const next = `${cleaned.trim()}\n${markerStart}\n${line}\n${markerEnd}\n`;
-  execSync("crontab -", { input: next });
-}
-```
-
-被系统 cron 唤醒的 runner 示例：
-
-```js
-// s14-cron-runner.js
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { cronMatches } from "./helper.js";
-import { agentLoop } from "./s14-cron-scheduler.js";
-
-const jobsFile = ".scheduled_tasks.json";
-const stateFile = ".scheduled_task_runs.json";
-
-function readJson(file, fallback) {
-  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : fallback;
-}
-
-function minuteMarker(date) {
-  return date.toISOString().slice(0, 16);
-}
-
-const now = new Date();
-const marker = minuteMarker(now);
-const jobs = readJson(jobsFile, []);
-const state = readJson(stateFile, {});
-
-for (const job of jobs) {
-  if (!cronMatches(job.cron, now)) continue;
-  if (state[job.id] === marker) continue;
-
-  state[job.id] = marker;
-
-  const messages = [{ role: "user", content: `[Scheduled] ${job.prompt}` }];
-  const result = await agentLoop(messages, async () => "n");
-
-  console.log(`[${new Date().toISOString()}] ${job.id}: ${result}`);
-}
-
-writeFileSync(stateFile, JSON.stringify(state, null, 2));
-```
-
-这个版本的关键变化是：`cronTick` 不再依赖常驻 Node 进程，而是由操作系统负责“每分钟拉起一次”。但它仍然不是完整生产方案：还需要处理环境变量、锁文件防重入、日志轮转、失败重试、权限确认和跨平台差异。
-
-## 递进审计说明
-
-s14 的定时调度建立在 s13 后台任务之上，原有 agent 能力仍在。源码还包含两组非 cron 变化：教学日志改成 `[turn]`、`[tool result]` 等标签；任务读取移除了部分“找不到 id”预检查，正常 task id 路径不变，但无效 id 的错误表现与 s13 不同。后者不是本章机制，因此不放进下面的关键 diff。
-
-## 与 s13 的关键代码 diff（不含 helper.js）
-
-下面只展示 cron 状态、到点入队、自动交付、工具注册和 CLI 调度入口。
-
-```diff
---- s13-background-tasks.js
-+++ s14-cron-scheduler.js
-+  cronMatches,
-+  validateCron,
-
-+let cronStorePath = path.join(process.cwd(), ".scheduled_tasks.json");
-+export function setCronStorePath(p) {
-+  cronStorePath = p;
-+}
-+
-+const scheduledJobs = new Map(); // id → { id, cron, prompt, recurring, durable }
-+const cronQueue = []; // 到点的 job 在这里排队，等 agent loop 消费
-+const lastFired = new Map(); // id → "Y-M-D H:M"，同一分钟不重复触发
-+let cronSeq = 0;
-+let cronProcessing = false;
-+let agentRunning = false;
-
-+export function scheduleJob(cron, prompt, recurring = true, durable = true) {
-+  const err = validateCron(cron);
-+  if (err) return err;
-+  const job = { id: `cron_${String(cronSeq++).padStart(4, "0")}`, cron, prompt, recurring, durable };
-+  scheduledJobs.set(job.id, job);
-+  if (durable) saveDurableJobs();
-+  console.log(`  [cron register] ${job.id} '${cron}' → ${preview(prompt, 40)}`);
-+  return job;
-+}
-
-+export function cronTick(now = new Date()) {
-+  const marker = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}`;
-+  for (const job of [...scheduledJobs.values()]) {
-+    try {
-+      if (!cronMatches(job.cron, now)) continue;
-+      if (lastFired.get(job.id) !== marker) {
-+        cronQueue.push(job);
-+        lastFired.set(job.id, marker);
-+        console.log(`  [cron fire] ${job.id} → ${preview(job.prompt, 40)}`);
-+      }
-+      if (!job.recurring) {
-+        scheduledJobs.delete(job.id);
-+        if (job.durable) saveDurableJobs();
-+      }
-+    } catch {
-+      // 单个坏 job 不拖垮整个调度
-+    }
-+  }
-+}
-
-+export async function processCronQueue(confirm = async () => "n") {
-+  if (cronProcessing || agentRunning || !hasCronQueue()) return false;
-+  cronProcessing = true;
-+  agentRunning = true;
-+  try {
-+    if (!hasCronQueue()) return false;
-+    console.log("\n  [queue processor] delivering scheduled work");
-+    const text = await agentLoop([], confirm);
-+    if (text) console.log(text);
-+    console.log();
-+    return true;
-+  } catch (error) {
-+    console.error(`[queue processor error] ${error.message}`);
-+    return false;
-+  } finally {
-+    agentRunning = false;
-+    cronProcessing = false;
-+  }
-+}
-
-+  tool("schedule_cron", "Schedule a cron job (5-field: min hour dom month dow) to inject a prompt when it fires.", {
-+    type: "object",
-+    properties: {
-+      cron: { type: "string" },
-+      prompt: { type: "string" },
-+      recurring: { type: "boolean" },
-+      durable: { type: "boolean" },
-+    },
-+    required: ["cron", "prompt"],
-+  }),
-+  tool("list_crons", "List all registered cron jobs.", { type: "object", properties: {} }),
-+  tool("cancel_cron", "Cancel a cron job by id.", {
-+    type: "object",
-+    properties: { job_id: { type: "string" } },
-+    required: ["job_id"],
-+  }),
-
-+  schedule_cron: runScheduleCron,
-+  list_crons: runListCrons,
-+  cancel_cron: runCancelCron,
-
-+    // s14：每轮开头消费到点的定时任务，注入为 [Scheduled] 消息。
-+    injectCronJobs(messages);
-
-+async function runInteractiveAgentTurn(messages, confirm) {
-+  while (agentRunning) {
-+    await new Promise((resolve) => setTimeout(resolve, 50));
-+  }
-+  agentRunning = true;
-+  try {
-+    return await agentLoop(messages, confirm);
-+  } finally {
-+    agentRunning = false;
-+  }
-+}
-
-+  loadDurableJobs(); // s14：恢复持久化的定时任务
-+  console.log("  [queue processor] started");
-+  const ticker = setInterval(() => {
-+    cronTick(new Date()); // 独立调度心跳，每秒一次
-+    processCronQueue(async () => "n"); // agent 空闲时自动交付到点任务
-+  }, 1000);
-+  ticker.unref?.(); // 不阻止进程退出
+```bash
+pnpm vitest run code-agent-course/s14-cron-scheduler.test.js
 ```
 
 ## 博客代码演进
 
-下面 10 个 patch 专门用于博客右侧的代码切换。第一步基于 `s13-background-tasks.js`，后面的每一步都继续修改上一帧，最后必须得到完整的 `s14-cron-scheduler.js`。
+### 1. 整理开头：引入 cron 表达式解析函数
 
-每一步的代码都可以运行。顺序是：先能登记定时任务，再让它到点触发，再把触发的任务交给 agent 处理，最后让任务在重启后还在。注意这里的调度器是写在程序里面的，靠 `setInterval` 每秒检查一次，没有用到操作系统的 cron。日志放在最后一步统一补上。
-
-### 1. 整理开头：引入 cron 表达式的解析函数
-
-cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主线关系不大，所以放在 `helper.js` 里：`validateCron` 检查表达式是否合法，`cronMatches` 判断某个时间点是否符合表达式。这一步把它们引入进来。
+五段式 cron 表达式（如 `*/2 * * * *`）的词法校验和匹配比较琐碎，和 Agent 主循环逻辑无关，因此我们把它作为纯工具函数收进 `helper.js`。这一步先引入 `validateCron`（校验合法性）和 `cronMatches`（判断当前时间是否命中）。
 
 ```diff agent-step
 @@
@@ -518,9 +87,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
    if (name !== "bash") return false;
 ```
 
-### 2. 调度器需要记住的东西
+### 2. 声明调度器运行状态
 
-先声明调度器的状态。`scheduledJobs` 是登记表，记录所有定时任务。`cronQueue` 是队列，到点的任务先放在这里排队，等 agent 来取。`lastFired` 记录每个任务上一次触发在哪一分钟，防止同一分钟内重复触发。`cronProcessing` 和 `agentRunning` 是两个开关，后面用来保证同一时间只有一个 agent 在运行。`cronStorePath` 是保存任务的文件路径，`resetCron` 给测试清空用。
+先备好调度器的几个核心状态：`scheduledJobs` 保存所有已登记的定时任务；`cronQueue` 暂存已经到点、等待交付的任务；`lastFired` 记下每个任务上次触发的“分钟标记”，防止同一分钟内重复触发；`cronProcessing` 和 `agentRunning` 充当并发互斥锁；`cronStorePath` 和 `resetCron` 方便测试隔离文件路径与重置状态。
 
 ```diff agent-step
 @@
@@ -550,9 +119,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
  const TOOL_RESULTS_DIR = path.join(process.cwd(), ".task_outputs", "tool-results");
 ```
 
-### 3. 登记一个定时任务
+### 3. scheduleJob：登记定时任务并支持持久化
 
-`scheduleJob` 接收一个 cron 表达式和一段 prompt：到点时，这段 prompt 会被当作用户的话交给 agent。它先验证表达式，不合法就返回错误说明；合法就生成编号、放进登记表。任务有两个选项：`recurring` 表示重复触发还是只触发一次，`durable` 表示是否保存到文件。`saveDurableJobs` 把需要保存的任务写进 `.scheduled_tasks.json`。
+`scheduleJob` 先用 `validateCron` 校验表达式，不合法就直接返回错误说明。校验通过后生成 `cron_XXXX` 编号并写入登记表，同时支持两个布尔选项：`recurring` 控制周期触发还是一次性，`durable` 控制是否经由 `saveDurableJobs()` 同步落盘到 `.scheduled_tasks.json`。
 
 ```diff agent-step
 @@
@@ -576,9 +145,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
  const TOOL_RESULTS_DIR = path.join(process.cwd(), ".task_outputs", "tool-results");
 ```
 
-### 4. schedule_cron 工具：让模型能定闹钟
+### 4. schedule_cron 工具：让模型自己定闹钟
 
-把登记功能做成工具交给模型。`runScheduleCron` 调用 `scheduleJob`，把结果整理成一句话：成功时说明编号和内容，失败时说明原因，模型看到错误可以改正表达式再试。然后加 schema、在 `handlers` 里登记。现在你对 agent 说“每两分钟检查一次某件事”，它已经能登记成功，只是还不会触发。
+接着把登记能力包装成工具。`runScheduleCron` 调用 `scheduleJob`，成功时返回编号与摘要，失败时返回带 `Error:` 的提示让模型有机会修正 cron 表达式重试。再连同 schema 和 `handlers` 一起接入，这一步之后模型已经能登记定时任务，只是还没装上心跳去触发。
 
 ```diff agent-step
 @@
@@ -611,9 +180,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
  };
 ```
 
-### 5. 查看和取消定时任务
+### 5. list_crons 和 cancel_cron：查看与取消任务
 
-有登记就要有查看和取消。`listCronJobs` 返回登记表里的所有任务，`cancelJob` 按编号删除一个任务，如果它保存过，就同步更新文件。对应的两个工具 `list_crons` 和 `cancel_cron` 一起加上。
+能建就得能查能删。`listCronJobs` 返回全部已登记任务，`cancelJob` 按 ID 删除并在需要时同步更新 `.scheduled_tasks.json`。我们把 `list_crons` 和 `cancel_cron` 两个工具的包装函数、schema 与 `handlers` 一次性配齐。
 
 ```diff agent-step
 @@
@@ -667,9 +236,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
  };
 ```
 
-### 6. cronTick：每秒看一次表，到点就排队
+### 6. cronTick：每秒对表，到点入队
 
-`cronTick` 是调度器的“心跳”。每次执行时，它拿当前时间去比对每一个任务：符合表达式，并且这一分钟还没触发过，就把任务放进 `cronQueue`。一次性的任务触发后从登记表里删掉。注意 `*/2 * * * *` 的意思是“分钟数能被 2 整除时触发”，不是“登记后过两分钟”。在 `main` 里用 `setInterval` 每秒调用一次 `cronTick`。它只负责排队，不执行任务，也不调用模型，所以和 agent 的循环互不干扰。
+`cronTick` 是进程内调度器的心跳。每秒扫一遍登记表：时间命中 `cronMatches` 且当前分钟标记尚未触发过，就把任务推入 `cronQueue` 并写好 `lastFired`；若是一次性任务，顺手删除并更新磁盘。`main` 里用 `setInterval(..., 1000)` 驱动它并调用 `ticker.unref?.()`，退出 CLI 时清理定时器。它只负责入队，绝不直接调模型。
 
 ```diff agent-step
 @@
@@ -711,9 +280,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
  }
 ```
 
-### 7. loop 每一轮开头取走到点的任务
+### 7. 在主循环轮首把到点任务注入对话
 
-排队的任务由 agent 来取。`consumeCronQueue` 一次取走队列里的全部任务，`injectCronJobs` 把每个任务的 prompt 加上 `[Scheduled]` 前缀，作为一条 user 消息放进 `messages`。在 loop 里每一轮开头调用它。对模型来说，这和用户亲自输入一句话没有区别。到这一步，任务到点后会在你下一次和 agent 说话时被处理。
+排进 `cronQueue` 的任务需要进入模型上下文。`consumeCronQueue` 一次性清空并取出所有待执行任务，`injectCronJobs` 给每条 prompt 加上 `[Scheduled]` 前缀，以普通 `user` 消息压入 `messages`。在 `agentLoop` 每轮开头调用它后，模型看到定时任务就像看到用户新发了一句需求。
 
 ```diff agent-step
 @@
@@ -745,9 +314,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
        messages.push({ role: "user", content: "<reminder>Update your todos.</reminder>" });
 ```
 
-### 8. 没人说话时也要处理
+### 8. processCronQueue：空闲时自动唤醒，并与交互回合互斥
 
-闹钟不应该等用户开口才响。`processCronQueue` 在队列里有任务、并且没有 agent 在运行时，自己启动一次 `agentLoop`，从一份空的 `messages` 开始，loop 开头会把到点的任务放进去。`main` 的定时器每秒调用它一次。为了不让两个 agent 同时运行，用户的输入改由 `runInteractiveAgentTurn` 处理：它先等正在运行的那个结束，再开始自己的。自动运行时没有人确认危险操作，所以 `confirm` 固定回答 `n`。
+闹钟不能干等用户再开口。`processCronQueue` 趁队列非空且 `agentRunning` 为 `false` 时，直接以空历史启动一轮 `agentLoop`（开头的 `injectCronJobs` 会自动消费队列），并把 `confirm` 固定成返回 `"n"` 避免无人值守时卡死。同时交互输入改走 `runInteractiveAgentTurn`，轮询等待运行锁释放后再进循环，彻底防住并发撞车。
 
 ```diff agent-step
 @@
@@ -802,9 +371,9 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
    });
 ```
 
-### 9. 重启之后任务还在
+### 9. 启动时恢复持久化定时任务
 
-最后处理持久化的另一半。登记时已经把 `durable` 的任务写进了文件，现在在启动时读回来：`loadDurableJobs` 读取 `.scheduled_tasks.json`，表达式合法的任务放回登记表，并打印恢复了几个。文件损坏也不报错，只当作没有任务。所以如果程序一启动就打印恢复了任务，说明是以前登记的任务被读回来了。提示符改成 `s14 >> `。
+补上持久化的另一半：`loadDurableJobs` 在 `main()` 启动时读取 `.scheduled_tasks.json`，只恢复表达式校验通过的任务并打印数量；文件损坏则安静忽略。所以如果刚启动脚本就看到恢复提示甚至立刻输出日期，正是旧的持久任务生效了。顺手把 CLI 提示符更新为 `s14 >> `。
 
 ```diff agent-step
 @@
@@ -841,9 +410,11 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
        return runInteractiveAgentTurn(messages, ask);
 ```
 
-### 10. 补上教学日志
+### 10. 补上调度追踪日志并统一标签格式
 
-调度是在后台悄悄进行的，需要日志才能看清顺序。这一步补上：登记任务时的 `[cron register]`、到点时的 `[cron fire]`、放进对话时的 `[inject cron]`、自动处理时的 `[queue processor]`。同时把上一章的日志格式统一成方括号标签：`[turn N]`、`[assistant]`、`[tool result]`、`[background start]`、`[task notification]`。运行时按这些标签的先后顺序，就能看出一次定时任务从登记到执行的全过程。
+定时触发发生在后台，没有清晰日志很难排查先后顺序。最后一步补齐 `[cron register]`、`[cron fire]`、`[inject cron]` 与 `[queue processor]` 日志，同时把上一章的轮次、工具和后台日志统一成 `[turn N]`、`[assistant]`、`[tool result]`、`[background start]`、`[task notification]` 方括号标签，一整条调度链路一目了然。
+
+> **本章思考题**：到这里，单个 Agent 已经能管任务图、跑后台、按时自启动。但面对前后端联调、一边改实现一边补测试这种大活，单兵还是忙不过来。如果不再只派一次性的子代理，而是拉起几个有名字、有角色、靠收件箱异步沟通的队友，这套协作层该怎么设计？下一章 `s15` 我们来做 Agent Teams。
 
 ```diff agent-step
 @@
@@ -923,4 +494,80 @@ cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主
 +  console.log("  [queue processor] started");
    const ticker = setInterval(() => {
      cronTick(new Date());
+```
+
+## 和上一步的关键代码 diff（不含 helper.js）
+
+```diff
+--- s13-background-tasks.js
++++ s14-cron-scheduler.js
+@@
++  cronMatches,
++  validateCron,
+@@
++let cronStorePath = path.join(process.cwd(), ".scheduled_tasks.json");
++const scheduledJobs = new Map();
++const cronQueue = [];
++const lastFired = new Map();
++let cronSeq = 0;
++let cronProcessing = false;
++let agentRunning = false;
++
++export function scheduleJob(cron, prompt, recurring = true, durable = true) {
++  const err = validateCron(cron);
++  if (err) return err;
++  const job = { id: `cron_${String(cronSeq++).padStart(4, "0")}`, cron, prompt, recurring, durable };
++  scheduledJobs.set(job.id, job);
++  if (durable) saveDurableJobs();
++  return job;
++}
++
++export function cronTick(now = new Date()) {
++  const marker = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}`;
++  for (const job of [...scheduledJobs.values()]) {
++    try {
++      if (!cronMatches(job.cron, now)) continue;
++      if (lastFired.get(job.id) !== marker) {
++        cronQueue.push(job);
++        lastFired.set(job.id, marker);
++      }
++      if (!job.recurring) {
++        scheduledJobs.delete(job.id);
++        if (job.durable) saveDurableJobs();
++      }
++    } catch {
++    }
++  }
++}
++
++export async function processCronQueue(confirm = async () => "n") {
++  if (cronProcessing || agentRunning || !hasCronQueue()) return false;
++  cronProcessing = true;
++  agentRunning = true;
++  try {
++    if (!hasCronQueue()) return false;
++    const text = await agentLoop([], confirm);
++    if (text) console.log(text);
++    return true;
++  } catch (error) {
++    console.error(`[queue processor error] ${error.message}`);
++    return false;
++  } finally {
++    agentRunning = false;
++    cronProcessing = false;
++  }
++}
+@@
++  schedule_cron: runScheduleCron,
++  list_crons: runListCrons,
++  cancel_cron: runCancelCron,
+@@
++    injectCronJobs(messages);
+@@
++  loadDurableJobs();
++  const ticker = setInterval(() => {
++    cronTick(new Date());
++    processCronQueue(async () => "n");
++  }, 1000);
++  ticker.unref?.();
 ```

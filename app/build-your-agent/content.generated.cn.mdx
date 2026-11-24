@@ -25855,43 +25855,18 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s12：Task System —— 把目标持久化成任务图
-Todo 像当前会话里的便签；跨会话、跨阶段协作时，则需要一块能保存下来的任务板。`s12` 在 `todo_write` 之外增加 task system，让任务有独立文件、依赖关系、状态和负责人。
+## !!steps s12：Task System - 把目标持久化成带依赖的任务图
+上一章 `s11` 让单次会话里的 Agent 抗住了限流、过载和截断，但回头看 `s05` 的 `todo_write`，那份清单只活在内存里，进程一退就清空，也管不住任务之间的先后依赖。
 
-### 本章目标
+这一章我们引入独立的 Task System。**Todo 管“这一轮怎么做”，Task System 管“整个项目有哪些工作、谁挡着谁、谁在负责”，把计划从内存便签升级成跨进程可恢复的任务图。**
 
-`s05` 的 todo 负责“这次对话接下来做什么”，只存在于当前 Node 进程。`s12` 的 task 负责“整个项目有哪些工作、先后关系是什么”，每个任务保存到 `.tasks/`，进程重启后仍可读取。
+### 问题
 
-本章保留 s11 的全部能力，只新增五个任务工具：
+只要工程跨过单次对话，就会遇到三个现实痛点：进程重启后进度不能丢；数据库 schema 没建完之前，不能抢先去写接口或跑测试；多阶段协作时需要明确每件事由谁认领。内存里的 `todo_write` 撑不起这些需求。
 
-- `create_task`：创建任务。
-- `list_tasks`：查看任务板。
-- `get_task`：读取一个任务的完整信息。
-- `claim_task`：认领依赖已完成的任务。
-- `complete_task`：完成任务，并报告刚被解锁的下游任务。
+### 解决方案
 
-### 教学版边界
-
-这里的“持久化”只表示进程重启后还能从文件恢复，不表示多进程并发安全：
-
-- `claimTask()` 是读取、判断、再写回，两个进程同时认领时可能都以为自己成功；
-- JSON 文件没有数据库事务、版本号、文件锁或 lease；
-- `Date.now() + 进程内序号` 适合教学，不是全局唯一 ID；
-- 生产系统应使用唯一约束、条件更新或 compare-and-swap 抢占任务，并保存事件日志来审计每次状态迁移。
-
-所以本章证明的是“任务图如何建模和恢复”，不是“分布式调度器已经完成”。
-
-### 新增函数速览
-
-- `setTasksDir(dir)`：测试入口，把任务目录临时切换到测试目录。
-- `createTask(subject, description, blockedBy)`：创建 `pending` 任务并写入 JSON 文件。
-- `listTasks()`：读取并按文件名排序所有任务。
-- `canStart(id)`：检查 `blockedBy` 中的任务是否全部存在且已完成。
-- `claimTask(id, owner)`：把可开始的任务从 `pending` 改为 `in_progress`，并记录 owner。
-- `completeTask(id)`：把进行中的任务改为 `completed`，再找出刚被解锁的下游任务。
-- `runCreateTask()` / `runListTasks()` / `runGetTask()`：把底层任务函数转换成适合返回给模型的文本。
-
-### 流程图
+我们把每个任务单独保存为 `.tasks/{task_id}.json`（含 `id`、`subject`、`description`、`status`、`owner`、`blockedBy` 六个字段），再向模型暴露 `create_task`、`list_tasks`、`get_task`、`claim_task`、`complete_task` 五个工具：
 
 ```mermaid
 flowchart TD
@@ -25901,6 +25876,9 @@ flowchart TD
   H -->|创建 / 保存 / 读取| TS[(".tasks/<br/>每个任务一个 JSON 文件<br/>id · subject · status · owner · blockedBy")]
   H --> DEP["依赖检查 + 状态流转<br/>blockedBy 全部完成才能认领<br/>pending → in_progress → completed"]
 ```
+
+多个任务靠 `blockedBy` 串成有向无环图（DAG），上游完成后下游自动就绪：
+
 ```mermaid
 flowchart TD
   schema["✓ schema<br/>completed"] --> endpoints["● endpoints<br/>in_progress · owner: agent-1"]
@@ -25909,32 +25887,16 @@ flowchart TD
   tests --> deploy["○ deploy<br/>pending · 等 tests 和 docs"]
   docs --> deploy
 ```
-```text
-create_task
-    |
-    v
-.tasks/{task_id}.json
-    |
-    v
-pending
-    |
-    | canStart：blockedBy 全部 completed？
-    v
-claim_task
-    |
-    v
-in_progress + owner
-    |
-    v
-complete_task
-    |
-    v
-completed + 解锁下游任务
-```
+
+这里有三个关键设计点：
+
+- **Todo 与 Task 分工互补**：`todo_write` 留在内存里拆解当前正在做的单个任务，Task System 落盘到 `.tasks/` 管理项目级依赖图，两者配合而非替代。
+- **依赖按 ID 校验、完成自动提示就绪任务**：`blockedBy` 存的是上游 `task_id`（不是标题），依赖缺失或未完成都会挡住 `claim_task`；`complete_task` 写完状态后会顺手扫出所有当前已满足依赖的 `pending` 任务并附在返回值里。
+- **教学版边界**：当前落盘只保证进程重启能恢复，不含文件锁、数据库事务或 lease，多进程并发认领不安全。生产系统应使用条件更新或 CAS 抢占，并记录事件日志。
 
 ---
 
-s05 的 `todo_write` 把计划放在内存里，程序一退出就没了。任务系统换一种做法：每个任务保存成 `.tasks/` 目录下的一个 JSON 文件，文件名就是任务的 id。先写最基础的读写：`saveTask` 把任务对象写成文件，`loadTask` 按 id 读回来，文件不存在就返回 `null`。`setTasksDir` 让测试可以换目录，`taskSeq` 是一个递增的序号，稍后用来生成不重复的 id。
+`s05` 的 `todo_write` 把清单放在内存里，进程一退就清空。任务系统换一条思路：每个任务存成 `.tasks/` 下的独立 JSON 文件，文件名就是任务 ID。先写最底层的读写 helper：`saveTask` 负责建目录写盘，`loadTask` 按 ID 读取（文件不存在返回 `null`），`setTasksDir` 供测试切换临时目录，`taskSeq` 用于生成不冲突的序号。
 
 本次代码变化：16 行。
 
@@ -26683,7 +26645,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`createTask` 生成一个任务并保存。id 由当前时间加序号组成，同一毫秒内创建多个也不会重复。新任务的状态是 `pending`（待办），`owner` 为空，`blockedBy` 记录它依赖哪些任务：这些任务没完成之前，它不能开始。`runCreateTask` 是给模型用的那一层，负责把结果整理成一句话。然后照老办法加 schema、在 `handlers` 里登记。s10 的提示词会自动把新工具名列进去，不用手动改。
+`createTask` 用当前时间戳加递增序号拼出 ID，同一毫秒连建多个任务也不会撞名。新建任务默认状态为 `pending`、`owner` 为 `null`，`blockedBy` 存它依赖的前置任务 ID。`runCreateTask` 负责把结果整理成返回给模型的简短文本，再连同工具 schema 和 `handlers` 一起注册。因为 `s10` 已经实现了动态提示词，新工具会自动出现在系统提示词里。
 
 本次代码变化：23 行。
 
@@ -27459,7 +27421,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`listTasks` 读出 `.tasks/` 目录下所有任务文件，按文件名排序，也就是按创建顺序。`runListTasks` 把它们排成一份清单，每行一个任务：图标表示状态（`○` 待办、`●` 进行中、`✓` 完成），后面是 id、标题、负责人和依赖。因为数据在磁盘上，退出程序再启动，这份清单还在。
+`listTasks` 扫描 `.tasks/` 下的任务文件并按文件名排序（即按创建时间排序）。`runListTasks` 把所有任务排成一目了然的清单：图标标示状态（`○` 待办、`●` 进行中、`✓` 完成），后面依次跟着 ID、标题、负责人和依赖列表。由于数据落在磁盘上，退出重开依然能读回完整进度。
 
 本次代码变化：25 行。
 
@@ -28262,7 +28224,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-清单里只有标题。模型需要看某个任务的完整内容时，用 `get_task` 传入 id，拿到整个 JSON，包括创建时写的详细描述。找不到就返回一句错误提示。
+清单里只列标题和状态，不展示长篇 `description`。当模型需要读取某个任务的完整说明时，调用 `get_task` 传入 `task_id` 即可拿到格式化后的完整 JSON；找不到对应文件就返回明确的错误提示。
 
 本次代码变化：10 行。
 
@@ -29073,7 +29035,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-开始做一个任务之前要先认领。`canStart` 检查依赖：`blockedBy` 里的每个任务都必须存在并且已经完成。`claimTask` 依次检查三件事：任务存在、状态是 `pending`、依赖都已完成。任何一条不满足，就返回原因，比如被哪几个任务挡住了。都满足才把状态改成 `in_progress`，写上负责人并保存。顺序就是这样被保证的：模型想跳过前置任务，会被这里拦住。
+开工前必须先认领。`canStart` 检查 `blockedBy` 里的每一项前置任务是否都存在且已完成；`claimTask` 依次校验“任务存在、状态为 `pending`、依赖全部就绪”三个条件。不存在或状态不符会直接报错，依赖未满足则把未完成的依赖 ID 拼成 `Blocked by: ...` 返回给模型；全部通过才把状态改为 `in_progress`、写上 `owner` 并落盘。依赖顺序就是靠这道门锁住的。
 
 本次代码变化：26 行。
 
@@ -29910,7 +29872,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`completeTask` 只接受状态是 `in_progress` 的任务，把它改成 `completed` 并保存。然后多做一步：找出那些原本被挡住、现在依赖已经全部完成的待办任务，把它们的标题附在返回结果里。模型看到“Unblocked: …”，就知道下一步可以认领哪个。五个任务工具到这里都齐了，提示符改成 `s12 >> `。
+`completeTask` 只允许结束 `in_progress` 状态的任务，将其改写为 `completed` 并落盘。接着它顺手扫一遍所有 `pending` 且带依赖的任务，把当前满足 `canStart` 的任务标题拼成 `Unblocked: ...` 一并返回（若之前已有其他带依赖任务就绪但尚未认领，也会一并列出）。模型看到这条线索，马上就能接上一步去认领后续任务。最后把 CLI 提示符切到 `s12 >> `。
 
 本次代码变化：22 行。
 
@@ -29920,17 +29882,19 @@ if (isMainModule(import.meta.url)) {
 创建三个持久任务：数据库 schema、依赖 schema 的 API、依赖 API 的测试；列出任务，认领并完成第一个任务，再说明哪个任务被解锁。
 ```
 
-观察 `.tasks/`：应出现三个 JSON 文件；第二、三个任务的 `blockedBy` 应保存前置任务 id。第一个任务完成后，API 任务应变为可认领，但测试任务仍被阻塞。
+运行后查看 `.tasks/` 目录，应该会多出三个 JSON 文件，后两个任务的 `blockedBy` 保存着前置任务 ID。第一个任务完成后，返回结果会提示 API 任务已解锁（`Unblocked`），测试任务则仍处于阻塞状态。
 
-### 扩展阅读：商业级 Agent 怎么管理 Task
+### 扩展阅读：商业级 Agent 怎么管理任务图
 
-真实产品里的 task 通常不仅是一个数组，还要能恢复、分派、审计和展示：
+商业产品里的任务系统不仅要记录清单，还要支持恢复、委派、审计与界面展示：
 
-- Claude Code 把会话内 todo 与可委派的 agent 工作分开；子代理负责一次委派，长期自动化则由独立运行入口管理。
-- Codex 以持久 thread、turn 和 rollout 保存工作过程，多 agent 能把工作委派到独立 agent；任务状态需要和会话状态一起恢复。
-- OpenCode 以 session、message、part 和事件保存执行记录，UI 与 runner 都从持久状态还原工作进度。
+- **Claude Code**：将会话内 todo 与可委派的子代理工作分开，子代理负责单次委派，长期自动化则由独立运行入口承载。参考 [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)。
+- **Codex**：以持久化的 thread、turn 和 rollout 记录执行过程，多 Agent 协作时任务状态与会话状态一并恢复。参考 [Codex 开源代码](https://github.com/openai/codex)。
+- **opencode**：用 session、message、part 与事件流落盘执行记录，前端与 runner 都从持久状态还原进度。参考 [OpenCode 开源仓库](https://github.com/anomalyco/opencode)。
 
-可继续阅读：[Claude Code subagents](https://code.claude.com/docs/en/sub-agents)、[Codex 开源代码](https://github.com/openai/codex)、[OpenCode session 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/session)。本章的 `.tasks/{id}.json` 是最小任务图：先保存 `status`、`owner` 和 `blockedBy`，后面的团队协作才能安全认领任务。
+**先把状态、负责人和前置依赖落到磁盘，后面的后台执行与多 Agent 协作才有共同的事实来源。**
+
+> **本章思考题**：任务图已经能跨会话保存、按依赖解锁了，但工具调用依然是同步阻塞的。如果某个任务要跑一次耗时几分钟的 `npm install` 或全量测试，整条主循环就会卡在原地什么都干不了。怎么把慢命令丢到后台异步执行，让 Agent 先干别的、跑完再收通知？下一章 `s13` 我们来做 Background Tasks。
 
 ```js ! agent.js range=306:847
 import {
@@ -30786,46 +30750,23 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s13：Background Tasks —— 慢操作放到后台
-新人去打印一百页资料时，不该站在打印机旁什么都不做。`s13` 让 agent 把慢命令交给后台子进程，先拿到任务 id，继续处理别的工作，完成后再接收通知。
+## !!steps s13：Background Tasks - 把慢命令丢到后台，不堵死主循环
+上一章 `s12` 给 Agent 配好了跨会话持久化的任务图，但所有工具依然是同步执行的。只要跑一条耗时的 `npm install`、`pytest` 或构建命令，整条 `agentLoop` 就会停在原地干等，什么别的活都干不了。
 
-### 本章目标
+这一章我们把慢命令改造成后台异步执行。**后台任务的本质是把“发起命令”和“回收结果”拆成两步：先立刻交回任务 ID 让主循环继续工作，等子进程跑完再把结果包成通知消息送回对话。**
 
-`s12` 已经能保存任务图，但工具仍是同步执行：一次 `bash` 不结束，agent loop 就不能继续。
+### 问题
 
-`s13` 保留前面的全部能力，只改变慢工具的执行方式：
+之前的 `runBash()` 底层用的是同步执行，子进程没退出前，整个 Node.js 事件循环都会被冻住。哪怕把同步函数硬套进 `Promise`，照样阻塞主线程。想让 Agent 一边装依赖、一边继续读文件写代码，必须做到“异步派发 + 结果回流”。
 
-1. 模型发出带 `run_in_background: true` 的 `bash` 调用，或命令命中慢操作关键词。
-2. 系统启动异步子进程，立即返回后台任务 id。
-3. 主 loop 把占位 `tool_result` 回给模型，继续处理其他工具。
-4. 子进程完成后，结果以新的 `<task_notification>` 消息注入对话。
+### 解决方案
 
-### 为什么这一步重要
-
-持久 task 和后台运行槽位是两件事：
-
-- Task System 记录“要完成什么、依赖谁、由谁负责”。
-- Background Task 记录“这条命令是否还在运行、结果是什么”。
-
-本章的后台任务只保存在 `backgroundTasks` 内存 Map 中，不会写入 `.tasks/`，进程退出后也不会恢复。
-
-### 新增函数速览
-
-- `isSlowOperation(name, args)`：只对 `bash` 命令做关键词判断，例如 `install`、`build`、`test`。
-- `shouldRunBackground(name, args)`：模型显式传 `run_in_background` 时优先，否则使用慢命令启发式。
-- `startBackgroundTask(name, args, run)`：创建 `bg_XXXX` 记录，异步启动 `run`，立即返回任务 id。
-- `runBashInBackground(command)`：使用 `spawn()` 启动异步 shell 子进程并收集 stdout / stderr。
-- `collectBackgroundResults()`：取出已完成任务，生成 `<task_notification>`，并从 Map 删除任务。
-- `injectBackgroundNotifications(messages)`：把完成通知作为新的 `user` 消息加入对话。
-- `waitForBackgroundTick()`：等待 25ms，让超快命令有机会在本轮结束前完成。
-- `resetBackgroundTasks()`：测试入口，清空后台任务状态。
-
-### 流程图
+我们给 `bash` 工具加上 `run_in_background` 参数，配合慢命令关键词启发式判断，将慢操作交给 `spawn()` 启动的异步子进程，并用内存表 `backgroundTasks` 跟踪状态，完成后通过 `<task_notification>` 注入回 `messages`：
 
 ```mermaid
 flowchart TD
   M["messages"] --> L["LLM"]
-  L --> D{"这个工具调用慢吗？"}
+  L --> D{"这个工具调用慢吗？<br/>run_in_background 或慢关键词"}
   D -->|快：read_file · glob · git status| SYNC["同步执行"]
   D -->|慢：npm install · pytest 等| BG["后台执行<br/>runBashInBackground"]
   SYNC -->|工具结果| M
@@ -30834,30 +30775,16 @@ flowchart TD
   DONE --> INJ["每轮检查 injectBackgroundNotifications<br/>把完成通知注入 messages"]
   INJ --> M
 ```
-```text
-LLM: bash(..., run_in_background=true)
-                 |
-                 v
-          spawn 异步子进程
-                 |
-                 +------> 立即返回 bg_0001
-                 |             |
-                 |             v
-                 |       主 loop 继续工作
-                 |
-                 v
-             子进程完成
-                 |
-                 v
-      <task_notification> 注入 messages
-                 |
-                 v
-              LLM 继续
-```
+
+这里有三个关键工程细节：
+
+- **显式参数 + 关键词兜底**：`shouldRunBackground()` 用逻辑或连接两项条件（`Boolean(args.run_in_background) || isSlowOperation(name, args)`）：只要显式传入 `run_in_background: true`，或者 `bash` 命令命中 `SLOW_KEYWORDS`（`install`、`build`、`test` 等）就会放进后台（因此即使显式传 `false`，命中慢关键词仍会走后台）。
+- **必须用异步 `spawn()` 且不复用旧 `tool_call_id`**：同步命令无法释放事件循环，必须换成 `node:child_process` 的 `spawn()` 边跑边收集输出；原工具调用已经回过占位 `tool_result`，所以最终结果要包成 `<task_notification>`（摘要保留前 200 字符）作为独立 `user` 消息注入。
+- **内存态与 25ms 时间边界**：后台运行槽位只存在内存 `backgroundTasks` Map 中，和 `.tasks/` 里的持久化任务图分工不同，进程退出即清空。`waitForBackgroundTick()` 只等 25ms 照顾超快演示命令；真正跑几秒的命令若在本轮结束后才完成，会在下一次进入循环时被回收。
 
 ---
 
-到目前为止，工具执行是“等它做完再继续”。遇到 `npm install` 这种要跑几分钟的命令，整个 agent 都卡在那里。本章让慢命令在后台执行。先准备一张表 `backgroundTasks`，用编号记录每个后台任务：执行的命令、状态、结果。`bgCounter` 用来生成编号，`resetBackgroundTasks` 给测试清空用。开头还引入了 `spawn`，稍后用它启动不会卡住程序的子进程。
+到目前为止，每个工具都是“做完才往下走”。遇到 `npm install` 这类耗时命令，整个 Agent 就卡在原地。我们先建一张内存表 `backgroundTasks` 记录每个后台任务的命令、状态和输出，用 `bgCounter` 生成递增编号，`resetBackgroundTasks` 供测试重置；同时引入 `node:child_process` 的 `spawn`，准备后面启动非阻塞子进程。
 
 本次代码变化：8 行。
 
@@ -31720,7 +31647,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-有两种判断方式。第一种：模型自己说。给 `bash` 工具的 schema 加一个 `run_in_background` 参数，模型知道命令会很慢时可以把它设为 `true`。第二种：程序猜。`isSlowOperation` 检查命令里有没有 `install`、`build`、`test` 这类词。`shouldRunBackground` 把两者合起来：模型明确要求的优先，否则用关键词判断。
+我们提供两套判断逻辑：一是模型主动声明，给 `bash` 工具 schema 加上 `run_in_background` 布尔参数；二是程序自动兜底，`isSlowOperation` 检查命令里是否包含 `install`、`build`、`test` 等慢关键词。`shouldRunBackground` 把两者合在一起，只要满足其一就走后台分支。
 
 本次代码变化：16 行。
 
@@ -32597,7 +32524,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-这是本章的核心函数。它先生成一个编号，在表里登记这个任务，状态是 `running`。然后启动任务，但是不写 `await`：`Promise.resolve().then(run)` 让 `run` 稍后执行，函数自己马上返回编号。等 `run` 真正完成时，`.then` 里的回调把状态改成 `completed`，并把结果填进表里。JavaScript 是单线程的，这里说的“后台”就是一个没有被等待的 Promise。
+这是本章的核心函数。它先生成 `bg_XXXX` 编号，在表里登记一条 `running` 记录，然后用 `Promise.resolve().then(run)` 触发异步执行。关键在于这里**没有 `await`**，函数立刻把 `bgId` 返回给调用方；等 `run` 真正跑完，`.then` 回调再把状态更新为 `completed` 并填好结果。
 
 本次代码变化：16 行。
 
@@ -33486,7 +33413,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-之前的 `runBash` 用的是同步执行，命令没结束，整个 Node.js 程序什么都做不了，即使把它包进 Promise 也一样。后台执行必须换成 `spawn`：它启动一个子进程后立刻返回，输出通过事件一点点收集，子进程结束时触发 `close` 事件，这时才把完整输出交出去。出错时也交出一段错误文字，而不是抛异常。
+之前的 `runBash` 底层走同步执行，命令不结束整个 Node 进程就动弹不得，包进 `Promise` 也没用。后台执行必须换成 `spawn`：子进程一拉起就立刻交还控制权，通过 `stdout`/`stderr` 的 `data` 事件累积输出，等 `close` 事件触发时 `resolve` 完整文本；子进程启动失败（`error` 事件）也会转成错误字符串而不抛出未捕获异常。注意教学版没有按退出码区分状态，非零退出码的命令在 `close` 后同样记为 `completed`，但 `stderr` 会一并随结果摘要回传。
 
 本次代码变化：19 行。
 
@@ -34394,7 +34321,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-在 loop 里执行工具的地方加一个分支。如果 `shouldRunBackground` 判断这次调用该放后台，就调用 `startBackgroundTask`，然后立刻给模型一个占位的工具结果：“后台任务 bg_0001 已启动，完成后会通知你”。对话格式要求每个工具调用都必须有结果，占位结果满足了这一点，模型可以接着做别的事。不过到这一步，后台任务的真正结果还没有办法回到对话里。
+在 `agentLoop` 的工具分发处增加一条后台分支。只要 `shouldRunBackground` 返回 `true`，就用 `startBackgroundTask` 丢到后台（`bash` 走 `runBashInBackground`），然后立刻返回占位结果 `[Background task bg_0001 started] ...`。这样既满足协议里“每个 `tool_call` 必须有对应 `tool_result`”的要求，又让主循环马上继续处理后续工具。
 
 本次代码变化：8 行。
 
@@ -35312,7 +35239,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`collectBackgroundResults` 检查表里哪些任务已经完成，把每个任务包成一段 `<task_notification>`，里面有编号、状态、命令和结果的前 200 个字符，然后把它从表里删掉，保证只通知一次。`injectBackgroundNotifications` 把这些通知作为新的 user 消息加进 `messages`。在 loop 里有两个时机调用它：每一轮调用模型之前，以及每批工具执行完之后。注意通知是一条独立的消息，不是原来那次工具调用的结果，那次调用已经用占位结果回复过了。
+`collectBackgroundResults` 挑出已完成的记录，拼成带任务 ID、命令和前 200 字符摘要的 `<task_notification>`，随后从表里删除防止重复通知。`injectBackgroundNotifications` 将这些通知作为新的 `user` 消息追加进 `messages`，分别在每轮调模型前和每批工具跑完后触发，让异步结果顺畅回到模型视野里。
 
 本次代码变化：24 行。
 
@@ -36256,7 +36183,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-还有一种情况：模型说“我做完了”，但后台还有任务在跑，或者刚好完成。所以在返回最终回答之前再检查一次：有新通知就继续循环，让模型看到结果后再回答。`waitForBackgroundTick` 在还有后台任务时等 25 毫秒，给那些非常快的命令一点完成的时间，避免刚好错过。提示符改成 `s13 >> `。
+有时模型已经准备给出最终答复，但后台任务刚好在几毫秒内收尾。我们加上 `waitForBackgroundTick`：只要还有运行中的后台任务，就等待 `25ms` 再检查一次通知，有新通知就 `continue` 让模型看完结果再回答。顺手把 CLI 提示符更新为 `s13 >> `。
 
 本次代码变化：13 行。
 
@@ -37215,43 +37142,29 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-后台任务的执行顺序不容易凭空想清楚，所以这一章的日志比较多。`preview` 把长文本截短，`describeToolCall` 把一次工具调用写成一行，并标出它是同步执行还是放到后台，`notificationTaskId` 从通知里取出任务编号。然后在各个环节打印：第几轮、模型请求了什么、后台任务什么时候派发、结果什么时候被收回。运行一次“安装依赖的同时读文件”的例子，对照日志就能看到两件事是交错进行的。
+异步执行的先后顺序光靠脑补很难看清，最后一步统一补齐观察日志：`preview` 负责截断长文本，`describeToolCall` 一行展示工具是同步还是后台派发，`notificationTaskId` 提取通知里的任务编号。再配合每轮的 `Turn N`、派发与回收日志，跑一次“后台命令 + 同步读文件”就能直观看到两件事交错推进。
 
 本次代码变化：27 行。
 
 ### 测试 Prompt
 
 ```text
-用 bash 后台运行 `sleep 0.01 && echo background done`，同时继续读取 README.md。
+用 bash 后台运行 `sleep 0.01 && echo background done`，同时继续读取 package.json。
 ```
 
-预期日志顺序大致如下，具体 turn 数取决于模型一次返回多少个 tool call：
+运行后可以在终端日志里看到两件事交错推进：第 1 轮先派发后台任务 `bg_0001` 并立刻拿到占位结果，同时同步读取 `package.json`；下一轮收集到 `bg_0001` 的 `<task_notification>` 注入对话，模型同时看到文件内容和后台执行结果再作总结。
 
-```text
-Turn 1:
-  LLM → bash "sleep 0.01 && echo background done" (run_in_background=true)
-  [background] dispatched bg_0001: sleep 0.01 && echo background done
-  → start_background_task → bg_0001
-  → tool_result: "[Background task bg_0001 started]..."
-  LLM → read_file "README.md" (fast, sync)
-  → tool_result: "# build-your-agent..."
+### 扩展阅读：商业级 Agent 怎么做后台任务
 
-Turn 2:
-  → collect: bg_0001 done! inject <task_notification>
-  LLM → 同时看到 README 内容和后台完成通知
-```
+生产环境里的后台任务不仅要异步启动，还要支持查看实时日志、取消任务、限制并发以及刷新界面后恢复展示：
 
-### 扩展阅读：商业级 Agent 怎么做 Background Tasks
+- **Claude Code**：支持将 `bash` 命令放入后台运行，并用可追踪的 task ID 持续读取后台输出，与子代理任务统一管理。参考 [Claude Code background bash commands](https://code.claude.com/docs/en/interactive-mode#background-bash-commands)。
+- **Codex**：用 thread / turn 事件流持续上报工具状态与输出，长耗时工作通常放进独立线程或后台工作区执行。参考 [Codex 开源代码](https://github.com/openai/codex)。
+- **opencode**：通过 session 事件和 tool part 实时更新执行状态，长输出按受管理结果存放，不直接塞爆模型上下文。参考 [OpenCode tools 文档](https://opencode.ai/docs/tools/)。
 
-商业实现不仅要“异步启动”，还要能查看状态、持续读取输出、取消任务、限制并发，并在进程或界面恢复后继续展示结果：
+**同步工具拿即时结果，后台工具拿“回执 + 异步通知”，Agent 主循环才不会被慢命令拖死。**
 
-- Claude Code 支持把 bash 命令放到后台，并通过任务输出工具继续读取结果；后台 shell 与子代理任务使用可追踪的 task id。
-- Codex 把运行过程保存为 thread / turn 事件，工具执行状态和输出可被界面持续观察；长时间工作通常在独立线程或后台工作区中运行。
-- OpenCode 通过 session 事件和 tool part 更新工具状态，长输出可以保存为受管理的结果，而不是全部留在模型上下文。
-
-真实系统判断“是否慢”通常结合显式后台参数、命令类型、运行时长和持续输出。本章只使用 `run_in_background` 加关键词启发式，以最少代码讲清异步派发和通知回流。
-
-可继续阅读：[Claude Code background commands](https://code.claude.com/docs/en/common-workflows#run-bash-commands-in-the-background)、[Codex 开源代码](https://github.com/openai/codex)、[OpenCode tool 源码](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/tool)。
+> **本章思考题**：现在慢命令放进后台不会卡住主循环了，但整个循环依然是被动的：只有你敲一句输入，它才会启动一次。如果希望 Agent 每天早上定时巡检，或者每隔几分钟自动检查任务板，怎么让“时间”本身变成触发循环的入口？下一章 `s14` 我们来做 Cron Scheduler。
 
 ```js ! agent.js range=367:968
 import {
@@ -38242,86 +38155,41 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s14：Cron Scheduler —— 时间也能触发 agent
-有些任务不该一直等用户开口，比如每天早上检查日报、每隔几分钟看一次任务状态。`s14` 给 agent 装一个闹钟：时间到了，系统自动把预设 prompt 送进 agent loop。
+## !!steps s14：Cron Scheduler - 让时间也能主动唤醒 Agent
+上一章 `s13` 把慢命令放进了后台，但整条循环依然只有等你敲一句话才会启动。很多日常工作不该靠人盯着：比如每天早上巡检项目、每隔几分钟查看一次构建或任务板状态。
 
-这一章对齐 Python 版的核心设计：**scheduler 负责发现到点任务，queue processor 负责在 agent 空闲时自动交付任务。**
+这一章我们给 Agent 装上一个**进程内定时调度器**。**定时调度按三层解耦：`cronTick` 只管按表发现到点任务并入队，`processCronQueue` 在 Agent 空闲时自动唤醒，原有的 `agentLoop` 照常把到点任务当作 `[Scheduled]` 消息处理。**
 
-### 本章目标
+### 问题
 
-有了 s13 的后台任务以后，agent 已经能“慢慢跑”。但它仍然需要用户输入来启动。
+有了后台执行后，Agent 能“慢慢跑”了，却还不能“到点自己跑”。如果把定时逻辑直接硬塞进主循环，既可能和正在进行的交互对话撞车，又容易在无人值守时卡死在终端权限确认上。
 
-`s14` 新增时间触发入口：
+### 解决方案
 
-注意：当前实现还是**进程内调度器**，不是操作系统的 cron。只要 `node s14-cron-scheduler.js` 这个进程活着，它就会自动执行到点任务。
-
-### 新增能力
-
-- `schedule_cron`：注册一个定时任务。
-- `list_crons`：列出当前所有定时任务。
-- `cancel_cron`：取消一个定时任务。
-- `cronTick()`：每秒检查哪些任务到点。
-- `cronQueue`：暂存已经到点、等待交付的任务。
-- `processCronQueue()`：agent 空闲时自动消费队列，不等用户下一次输入。
-- durable job：把任务定义写入 `.scheduled_tasks.json`，下次启动时恢复。
-
-### 为什么这一步重要
-
-s13 解决的是“工具已经开始后，怎样不阻塞主循环”；s14 解决的是“没有用户输入时，谁来启动一轮工作”。scheduler 只判断时间并入队，queue processor 负责在 agent 空闲时交付，原来的 agent loop 仍负责调用模型和工具。
-
-### 新增函数速览
-
-- `cronMatches(expr, date)`：判断某个时间是否命中五段式 cron 表达式；这是纯工具函数，放在 `helper.js`。
-- `validateCron(expr)`：在保存前检查 cron 表达式；这是纯工具函数，放在 `helper.js`。
-- `setCronStorePath(path)` / `resetCron()`：测试入口，替换持久化文件并清空进程内状态。
-- `loadDurableJobs()`：启动时从 `.scheduled_tasks.json` 恢复合法的 durable job。
-- `scheduleJob(cron, prompt, recurring, durable)`：创建定时任务，并决定是否写入 `.scheduled_tasks.json`。
-- `cancelJob(id)` / `listCronJobs()`：取消或列出已注册任务。
-- `cronTick(now)`：每秒扫描任务，把到点任务放入 `cronQueue`。
-- `hasCronQueue()`：判断队列里是否有等待交付的任务。
-- `consumeCronQueue()`：一次性取出队列里的到点任务。
-- `processCronQueue()`：当 agent 空闲且队列里有任务时，自动启动一轮 agent loop。
-- `runInteractiveAgentTurn()`：用户输入也要等待当前定时任务结束，避免两个 agent loop 同时修改共享状态。
-- `runScheduleCron()` / `runListCrons()` / `runCancelCron()`：把 cron 能力包装成模型可调用的工具 handler。
-
-### 流程图
+我们复用 `helper.js` 的五段式 cron 解析工具，新增 `schedule_cron`、`list_crons`、`cancel_cron` 三个工具，并在进程内用每秒一次的心跳串起“检测 → 入队 → 空闲交付 → 注入执行”闭环：
 
 ```mermaid
 flowchart TD
   subgraph SCHED["进程内调度器（非系统 crontab，进程退出即停）"]
-    TICK["每秒检查当前时间是否匹配五段式 cron<br/>例如 */5 * * * * · 0 9 * * 1-5"] -->|匹配（同分钟防重，一次性任务自动删除）| Q[("cronQueue")]
+    TICK["cronTick 每秒匹配五段式 cron<br/>如 */5 * * * * · 0 9 * * 1-5"] -->|到点入队（同分钟防重，一次性任务自动删）| Q[("cronQueue")]
   end
-  Q -->|injectCronJobs 注入| M["messages"]
+  Q -->|"空闲时 processCronQueue 唤醒<br/>injectCronJobs 注入 [Scheduled]"| M["messages"]
   M --> P["提示词 + 压缩"] --> L["LLM（带错误恢复）"]
   L --> H["handlers<br/>同步 / 后台工具 · 任务工具<br/>schedule_cron · list_crons · cancel_cron"]
   H -->|工具结果，下一轮| M
-  H -->|durable 任务持久化| F[(".scheduled_tasks.json<br/>重启后自动恢复")]
+  H -->|durable 任务落盘| F[(".scheduled_tasks.json<br/>重启后自动恢复")]
 ```
-```text
-用户要求 schedule_cron
-    |
-    v
-scheduleJob 保存 CronJob
-    |
-    v
-cronTick 每秒检查
-    |
-    v
-到点任务进入 cronQueue
-    |
-    v
-processCronQueue 自动交付
-    |
-    v
-agentLoop 注入 [Scheduled] prompt
-    |
-    v
-LLM 调用工具并输出结果
-```
+
+这套调度机制有四个容易踩坑的细节：
+
+- **纯进程内运行，不安装系统 cron**：定时器靠 `setInterval(..., 1000)` + `ticker.unref?.()` 驱动，只在本进程存活时生效，输入 `q` 退出后调度即停止，不会写入操作系统 `crontab`。
+- **五段式 cron 对齐整点分钟**：格式为 `分 时 日 月 周`。`*/2 * * * *` 表示“分钟数能被 2 整除时触发”，不是“从登记起等满 2 分钟”；例如 21:55 登记，21:56 就会触发，且 `lastFired` 按“年-月-日 时:分”防重，同一分钟只入队一次。
+- **互斥锁 + 无人值守默认拒绝**：`agentRunning` 标志让 `processCronQueue()` 与用户输入 `runInteractiveAgentTurn()` 错开执行，避免并发修改共享状态；自动触发时无人看守终端，`confirm` 固定返回 `"n"` 拒绝高危操作。
+- **持久化恢复**：`durable: true` 的任务写入 `.scheduled_tasks.json`，下次启动自动加载。若刚运行脚本就看到日期输出，说明恢复了历史持久任务；退出后执行 `rm .scheduled_tasks.json` 即可清空。
 
 ---
 
-cron 表达式（比如 `*/2 * * * *`）的解析比较琐碎，和 agent 的主线关系不大，所以放在 `helper.js` 里：`validateCron` 检查表达式是否合法，`cronMatches` 判断某个时间点是否符合表达式。这一步把它们引入进来。
+五段式 cron 表达式（如 `*/2 * * * *`）的词法校验和匹配比较琐碎，和 Agent 主循环逻辑无关，因此我们把它作为纯工具函数收进 `helper.js`。这一步先引入 `validateCron`（校验合法性）和 `cronMatches`（判断当前时间是否命中）。
 
 本次代码变化：3 行。
 
@@ -39300,7 +39168,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-先声明调度器的状态。`scheduledJobs` 是登记表，记录所有定时任务。`cronQueue` 是队列，到点的任务先放在这里排队，等 agent 来取。`lastFired` 记录每个任务上一次触发在哪一分钟，防止同一分钟内重复触发。`cronProcessing` 和 `agentRunning` 是两个开关，后面用来保证同一时间只有一个 agent 在运行。`cronStorePath` 是保存任务的文件路径，`resetCron` 给测试清空用。
+先备好调度器的几个核心状态：`scheduledJobs` 保存所有已登记的定时任务；`cronQueue` 暂存已经到点、等待交付的任务；`lastFired` 记下每个任务上次触发的“分钟标记”，防止同一分钟内重复触发；`cronProcessing` 和 `agentRunning` 充当并发互斥锁；`cronStorePath` 和 `resetCron` 方便测试隔离文件路径与重置状态。
 
 本次代码变化：20 行。
 
@@ -40299,7 +40167,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`scheduleJob` 接收一个 cron 表达式和一段 prompt：到点时，这段 prompt 会被当作用户的话交给 agent。它先验证表达式，不合法就返回错误说明；合法就生成编号、放进登记表。任务有两个选项：`recurring` 表示重复触发还是只触发一次，`durable` 表示是否保存到文件。`saveDurableJobs` 把需要保存的任务写进 `.scheduled_tasks.json`。
+`scheduleJob` 先用 `validateCron` 校验表达式，不合法就直接返回错误说明。校验通过后生成 `cron_XXXX` 编号并写入登记表，同时支持两个布尔选项：`recurring` 控制周期触发还是一次性，`durable` 控制是否经由 `saveDurableJobs()` 同步落盘到 `.scheduled_tasks.json`。
 
 本次代码变化：14 行。
 
@@ -41312,7 +41180,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-把登记功能做成工具交给模型。`runScheduleCron` 调用 `scheduleJob`，把结果整理成一句话：成功时说明编号和内容，失败时说明原因，模型看到错误可以改正表达式再试。然后加 schema、在 `handlers` 里登记。现在你对 agent 说“每两分钟检查一次某件事”，它已经能登记成功，只是还不会触发。
+接着把登记能力包装成工具。`runScheduleCron` 调用 `scheduleJob`，成功时返回编号与摘要，失败时返回带 `Error:` 的提示让模型有机会修正 cron 表达式重试。再连同 schema 和 `handlers` 一起接入，这一步之后模型已经能登记定时任务，只是还没装上心跳去触发。
 
 本次代码变化：15 行。
 
@@ -42344,7 +42212,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-有登记就要有查看和取消。`listCronJobs` 返回登记表里的所有任务，`cancelJob` 按编号删除一个任务，如果它保存过，就同步更新文件。对应的两个工具 `list_crons` 和 `cancel_cron` 一起加上。
+能建就得能查能删。`listCronJobs` 返回全部已登记任务，`cancelJob` 按 ID 删除并在需要时同步更新 `.scheduled_tasks.json`。我们把 `list_crons` 和 `cancel_cron` 两个工具的包装函数、schema 与 `handlers` 一次性配齐。
 
 本次代码变化：32 行。
 
@@ -43410,7 +43278,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`cronTick` 是调度器的“心跳”。每次执行时，它拿当前时间去比对每一个任务：符合表达式，并且这一分钟还没触发过，就把任务放进 `cronQueue`。一次性的任务触发后从登记表里删掉。注意 `*/2 * * * *` 的意思是“分钟数能被 2 整除时触发”，不是“登记后过两分钟”。在 `main` 里用 `setInterval` 每秒调用一次 `cronTick`。它只负责排队，不执行任务，也不调用模型，所以和 agent 的循环互不干扰。
+`cronTick` 是进程内调度器的心跳。每秒扫一遍登记表：时间命中 `cronMatches` 且当前分钟标记尚未触发过，就把任务推入 `cronQueue` 并写好 `lastFired`；若是一次性任务，顺手删除并更新磁盘。`main` 里用 `setInterval(..., 1000)` 驱动它并调用 `ticker.unref?.()`，退出 CLI 时清理定时器。它只负责入队，绝不直接调模型。
 
 本次代码变化：23 行。
 
@@ -44497,7 +44365,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-排队的任务由 agent 来取。`consumeCronQueue` 一次取走队列里的全部任务，`injectCronJobs` 把每个任务的 prompt 加上 `[Scheduled]` 前缀，作为一条 user 消息放进 `messages`。在 loop 里每一轮开头调用它。对模型来说，这和用户亲自输入一句话没有区别。到这一步，任务到点后会在你下一次和 agent 说话时被处理。
+排进 `cronQueue` 的任务需要进入模型上下文。`consumeCronQueue` 一次性清空并取出所有待执行任务，`injectCronJobs` 给每条 prompt 加上 `[Scheduled]` 前缀，以普通 `user` 消息压入 `messages`。在 `agentLoop` 每轮开头调用它后，模型看到定时任务就像看到用户新发了一句需求。
 
 本次代码变化：17 行。
 
@@ -45599,7 +45467,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-闹钟不应该等用户开口才响。`processCronQueue` 在队列里有任务、并且没有 agent 在运行时，自己启动一次 `agentLoop`，从一份空的 `messages` 开始，loop 开头会把到点的任务放进去。`main` 的定时器每秒调用它一次。为了不让两个 agent 同时运行，用户的输入改由 `runInteractiveAgentTurn` 处理：它先等正在运行的那个结束，再开始自己的。自动运行时没有人确认危险操作，所以 `confirm` 固定回答 `n`。
+闹钟不能干等用户再开口。`processCronQueue` 趁队列非空且 `agentRunning` 为 `false` 时，直接以空历史启动一轮 `agentLoop`（开头的 `injectCronJobs` 会自动消费队列），并把 `confirm` 固定成返回 `"n"` 避免无人值守时卡死。同时交互输入改走 `runInteractiveAgentTurn`，轮询等待运行锁释放后再进循环，彻底防住并发撞车。
 
 本次代码变化：32 行。
 
@@ -46735,7 +46603,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后处理持久化的另一半。登记时已经把 `durable` 的任务写进了文件，现在在启动时读回来：`loadDurableJobs` 读取 `.scheduled_tasks.json`，表达式合法的任务放回登记表，并打印恢复了几个。文件损坏也不报错，只当作没有任务。所以如果程序一启动就打印恢复了任务，说明是以前登记的任务被读回来了。提示符改成 `s14 >> `。
+补上持久化的另一半：`loadDurableJobs` 在 `main()` 启动时读取 `.scheduled_tasks.json`，只恢复表达式校验通过的任务并打印数量；文件损坏则安静忽略。所以如果刚启动脚本就看到恢复提示甚至立刻输出日期，正是旧的持久任务生效了。顺手把 CLI 提示符更新为 `s14 >> `。
 
 本次代码变化：17 行。
 
@@ -47884,7 +47752,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-调度是在后台悄悄进行的，需要日志才能看清顺序。这一步补上：登记任务时的 `[cron register]`、到点时的 `[cron fire]`、放进对话时的 `[inject cron]`、自动处理时的 `[queue processor]`。同时把上一章的日志格式统一成方括号标签：`[turn N]`、`[assistant]`、`[tool result]`、`[background start]`、`[task notification]`。运行时按这些标签的先后顺序，就能看出一次定时任务从登记到执行的全过程。
+定时触发发生在后台，没有清晰日志很难排查先后顺序。最后一步补齐 `[cron register]`、`[cron fire]`、`[inject cron]` 与 `[queue processor]` 日志，同时把上一章的轮次、工具和后台日志统一成 `[turn N]`、`[assistant]`、`[tool result]`、`[background start]`、`[task notification]` 方括号标签，一整条调度链路一目了然。
 
 本次代码变化：19 行。
 
@@ -47894,17 +47762,21 @@ if (isMainModule(import.meta.url)) {
 Schedule a task to print the current date every 1 minutes
 ```
 
-观察重点：注册成功后，即使你不再输入，终端也会继续出现 `[cron fire]`、`[queue processor]`、`[inject cron]` 和 `date` 的执行结果。
+注册成功后，什么都不用输入；因为 `* * * * *` 匹配任意分钟且心跳每秒检测一次，在当前分钟的下一次 1 秒心跳（以及之后的每一整分钟）就会自动触发，你可以看到完整的教学日志链：`[cron register]` → `[cron fire]` → `[queue processor]` → `[inject cron]` → `> bash "date"` 自动输出当前时间。测试完毕退出后，若不想下次启动继续触发，记得删除 `.scheduled_tasks.json`。
 
-### 扩展阅读：真实 Coding Agent 怎么做定时调度
+### 扩展阅读：商业级 Agent 怎么做定时调度
 
-这一章的实现是进程内调度器：Node 进程活着，`cronTick` 才会每秒检查一次；进程退出后，定时检查也会停止。真实产品通常会把“何时唤醒”和“唤醒后让 agent 做什么”拆成两层。
+真实产品通常会把“何时唤醒”与“唤醒后做什么”彻底拆开，把进程内心跳替换成常驻守护服务或云端调度器：
 
-- Claude Code：官方文档里有会话内的 `/loop` 和 `CronCreate` / `CronList` / `CronDelete` 工具，用来反复执行 prompt、轮询状态或设置一次性提醒。它的会话内任务会在 Claude Code 运行时由调度器检查，并在 agent 空闲时低优先级入队；如果要脱离当前会话长期可靠运行，文档建议用 cloud routines、Desktop scheduled task 或 GitHub Actions。参考：[Claude Code scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks)。
-- Codex：Codex App 的 Automations 可以按计划在后台运行任务，完成结果进入 review queue，用户再继续检查或跟进。OpenAI 当前说明也提醒：本地运行时，电脑保持唤醒且 Codex App 正在运行最可靠。参考：[Codex Automations](https://openai.com/academy/codex-automations/) 和 [Introducing the Codex app](https://openai.com/index/introducing-the-codex-app/)。
-- OpenCode：核心项目把定时能力交给插件生态。官方 ecosystem 列出的 `opencode-scheduler` 使用 cron 语法，在 macOS 注册 `launchd`，在 Linux 注册 `systemd`。这属于社区插件，不是 OpenCode 主循环内置的 scheduler。参考：[OpenCode ecosystem](https://opencode.ai/docs/ecosystem/) 和 [opencode-scheduler](https://github.com/different-ai/opencode-scheduler)。
+- **Claude Code**：会话内提供 `/loop` 及 `CronCreate` / `CronList` / `CronDelete` 工具，在运行期间趁空闲低优先级入队；需要脱离当前终端长期可靠运行时，官方建议改用 cloud routines、Desktop scheduled task 或 GitHub Actions。参考 [Claude Code scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks)。
+- **Codex**：Codex App 的 Automations 支持按计划后台运行并将结果送入 review queue，本地运行时依赖机器保持唤醒且应用在线。参考 [Codex Automations](https://openai.com/academy/codex-automations/) 与 [Introducing the Codex app](https://openai.com/index/introducing-the-codex-app/)。
+- **opencode**：核心保持精简，定时能力交给社区插件生态，例如 `opencode-scheduler` 在 macOS 注册 `launchd`、在 Linux 注册 `systemd`。参考 [OpenCode ecosystem](https://opencode.ai/docs/ecosystem/) 与 [opencode-scheduler](https://github.com/different-ai/opencode-scheduler)。
 
-所以可以这样理解本章的位置：`s14` 先把 agent runtime 里的调度闭环讲清楚；如果要做成真正可靠的产品，再把 `cronTick` 这一层替换成系统调度器、云调度器或桌面 App 的 automation 服务。……
+如果把本章改造成系统级 cron，核心只需换掉 `cronTick` 一层：由系统 `crontab` / `launchd` / `systemd` 每分钟拉起一个独立 runner，读取 `.scheduled_tasks.json`，用 `cronMatches()` 筛出到点任务并执行 `agentLoop`，同时补齐锁文件防重入、环境变量与日志轮转。
+
+**`s14` 把“发现到点、排队交付、注入循环”的运行时闭环先立住，将来换上系统调度器或云调度器时，主循环一行都不用改。**
+
+> **本章思考题**：到这里，单个 Agent 已经能管任务图、跑后台、按时自启动。但面对前后端联调、一边改实现一边补测试这种大活，单兵还是忙不过来。如果不再只派一次性的子代理，而是拉起几个有名字、有角色、靠收件箱异步沟通的队友，这套协作层该怎么设计？下一章 `s15` 我们来做 Agent Teams。
 
 ```js ! agent.js range=434:1156
 import {
@@ -49077,54 +48949,18 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s15：Agent Teams —— 有身份的队友和文件邮箱
-当任务变大，一个 agent 不够用了。`s15` 开始搭一个小团队：每个队友有名字、角色、独立上下文和文件收件箱；lead 不必等待队友执行完，结果会通过邮箱稍后返回。
+## !!steps s15：Agent Teams - 给队友起名字、建邮箱，把单兵变成团队
+上一章 `s14` 让单个 Agent 具备了按时自启动的能力，但面对前后端联调、同时改代码和补测试这类大任务，单兵串行推进还是慢。回头看 `s06` 的 `task` 子代理，它像一次性的临时工，干完只交回一段摘要就解散，没法长期沟通。
 
-### 本章目标
+这一章我们给 Agent 搭起团队协作层。**多 Agent 协作的关键不是“多调几次模型”，而是给每个队友独立身份、独立上下文和可检查的文件收件箱，让 Lead 派活后继续干自己的事，结果通过 `.mailboxes/*.jsonl` 异步回流。**
 
-`s06` 的 `task` 是一次性子代理：给它一个任务，它做完后只返回摘要。`s15` 的 teammate 有名字和角色，可以运行多轮，并通过邮箱向 lead 汇报。
+### 问题
 
-这里要区分两个生命周期：`.mailboxes/*.jsonl` 会保留到被读取；teammate 本身仍是最多运行十轮的后台任务，给出最终文本后就退出。到 s16 才会加入短暂 idle loop，等待后续消息或关机请求。
+一次性子代理有两个局限：主 Agent 必须同步干等它结束，而且中途无法追加指令，也分不清多个协作者各自负责什么。当多个角色需要并行干活、互相通信时，必须有一套带身份的异步消息总线。
 
-这一章只新增团队通信层，前面章节的 todo、skill、memory、task、background task、cron queue processor 都继续保留。
+### 解决方案
 
-### 新增能力
-
-- `spawn_teammate`：启动一个有名字和角色的队友。
-- `send_message`：把消息写入某个 agent 的文件收件箱。
-- `check_inbox`：lead 主动查看自己的收件箱。
-- `.mailboxes/*.jsonl`：每个 agent 一个收件箱文件，每一行是一条 JSON 消息。
-- 队友独立多轮子循环：队友可以调用自己的工具，并把结果发回 lead。
-
-### 为什么这一步重要
-
-团队不是“多调用几次 LLM”。真正关键的是通信结构变了：
-
-- 子代理适合短任务，父 agent 只需要最终摘要。
-- 队友适合长期协作，lead 需要知道谁说了什么、谁正在负责什么。
-- 文件邮箱让通信可检查，调试时可以直接打开 `.mailboxes/lead.jsonl` 看消息。
-
-### 参考实现提醒
-
-Agent Teams 的核心是“可检查的通信”，不是神秘多智能体：
-
-- 文件邮箱比内存消息更容易调试，因为每条消息都能在磁盘上看到。
-- lead 和 teammate 都应该有身份，否则日志和责任边界会混在一起。
-- 队友也要走权限门，不能因为换了执行者就绕过主系统规则。
-- 本章 JS 版用未 `await` 的 Promise 启动队友子循环。JavaScript 仍是单线程，但 LLM 和文件操作等待期间，lead 与 teammate 的异步流程可以交替推进。
-- 本章新增日志用颜色区分：`[teammate]` 是队友生命周期，`[bus]` 是邮箱消息流。
-
-一个完整的团队流程大概长这样：
-
-### 新增函数速览
-
-- `sendMessage(from, to, content, type)`：把一条消息追加写入 `to.jsonl`，例如发给 lead 就写 `.mailboxes/lead.jsonl`。
-- `readInbox(agent)`：读取某个 agent 的收件箱，读完就删除文件，表示消息已经被消费。
-- `spawnTeammate(name, role, prompt, confirm)`：启动一个后台队友，立即返回；队友稍后把总结写进 lead 的邮箱。
-- `runSpawnTeammate`、`runSendMessage`、`runCheckInbox`：把 LLM 的 tool call 参数转成具体函数调用。
-- `runInteractiveAgentTurn`：沿用 `s14` 的保护逻辑，避免用户输入回合和 cron 自动回合同一时间抢 `agentLoop`。
-
-### 流程图
+我们用 `.mailboxes/<agent>.jsonl` 实现文件邮箱，向 Lead 暴露 `spawn_teammate`、`send_message`、`check_inbox` 三个工具，让每个队友在后台跑自己的独立多轮循环：
 
 ```mermaid
 flowchart TD
@@ -49134,12 +48970,15 @@ flowchart TD
     LH -->|工具结果| LM
   end
   LH -->|spawn| A["队友 alice<br/>收件箱 → LLM<br/>工具 → 回复"]
-  LH -->|spawn| B["队友 bob<br/>独立循环<br/>共享 client"]
+  LH -->|spawn| B["队友 bob<br/>独立循环<br/>独立 messages"]
   LH -->|spawn| C["队友 charlie<br/>不能再派<br/>其他队友"]
   BUS[("MessageBus<br/>.mailboxes/*.jsonl")]
   A & B & C <-->|收发消息| BUS
   LH <-->|send_message / check_inbox| BUS
 ```
+
+按角色拆工后，整个团队围绕同一个文件消息总线协作：
+
 ```mermaid
 flowchart TD
   LEAD["Lead Agent<br/>主循环 + spawn + 处理收件箱"] <--> BUS[("Message Bus<br/>.mailboxes/*.jsonl")]
@@ -49147,27 +48986,16 @@ flowchart TD
   BUS <--> B["Bob 前端<br/>独立循环：收件 → 干活 → 回复"]
   BUS <--> C["Charlie 测试<br/>独立循环：收件 → 干活 → 回复"]
 ```
-```text
-lead agent
-   |
-   | spawn_teammate(name, role, prompt)
-   v
-teammate messages[]          .mailboxes/
-   |                              ^
-   | 独立调用 LLM + tools          |
-   v                              |
-send_message(to="lead") ----------+
-   |
-   v
-lead 下一轮 readInbox("lead")
-   |
-   v
-[Inbox] From alice: ...
-```
+
+这里有三个关键工程设计：
+
+- **消费式 JSONL 文件邮箱**：`sendMessage()` 往 `.mailboxes/<to>.jsonl` 追加一行 JSON，`readInbox()` 读完立刻删除文件防止重复消费。未读消息落在磁盘上，排错时打开尚未消费的 `.mailboxes/lead.jsonl` 就能看清待处理内容。
+- **异步派发 + 异常兜底**：`spawnTeammate()` 用未 `await` 的 `Promise.resolve().then(run)` 启动后台循环，最多跑 `TEAMMATE_TURNS`（10）轮；`.catch()` 把异常回写到 Lead 邮箱，`.finally()` 清理 `activeTeammates` 防止同名队友被永久锁死。
+- **权限与生命周期边界**：队友只有 `bash`、`read_file`、`write_file`、`send_message` 四个工具（不能再派队友，避免无限裂变），执行前照样过 `PreToolUse` 权限门；普通子代理也在 `SUB_EXCLUDE` 里禁用了团队工具。本章队友交出最终回复即退出，下一章 `s16` 再补短暂空闲等待与协议握手。
 
 ---
 
-s06 的子代理做完就消失，只留下一段总结。本章的队友不一样：它会持续工作，并且能和 Lead 来回通信。通信方式很朴素：每个 agent 在 `.mailboxes/` 目录下有一个自己的文件，就是它的收件箱。`sendMessage` 把一条消息（谁发的、发给谁、内容、类型、时间）转成一行 JSON，追加到对方的文件末尾。所以开头多引入了 `appendFileSync`。`setMailboxDir` 让测试可以换目录。
+`s06` 的子代理做完就散，只留一段摘要。本章的队友需要和 Lead 异步互通，通信手段非常朴素：每个 Agent 在 `.mailboxes/` 下拥有一个 `.jsonl` 文件。我们引入 `appendFileSync`，让 `sendMessage` 把发件人、收件人、内容、类型和时间戳序列化为一行追加写入对方文件；同时提供 `setMailboxDir` 方便测试隔离目录。
 
 本次代码变化：10 行。
 
@@ -50331,7 +50159,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`readInbox` 读出某个 agent 收件箱里的所有消息：按行拆开，每行解析成一个对象。读完立刻把文件删掉，这样同一条消息不会被读到两次。收件箱不存在就返回空数组，表示没有新消息。发和收都只是普通的文件操作，不需要网络，也不需要两边同时在线。
+`readInbox` 按行解析 `<agent>.jsonl` 里的所有消息，读完立刻删除文件，保证每条消息只进入上下文一次。文件不存在说明暂无新信，直接返回空数组。收发双方不必同时在线，全靠磁盘文件异步解耦。
 
 本次代码变化：7 行。
 
@@ -51500,7 +51328,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-把收发做成工具交给 Lead。`send_message` 以 `lead` 的名义给某个队友发消息；`check_inbox` 读出 Lead 自己的收件箱，整理成“[谁] 说了什么”的列表。照例加 schema、在 `handlers` 里登记。s06 的子代理不应该使用团队工具，所以把它们加进子代理的排除名单，其中 `spawn_teammate` 是稍后要加的工具，这里先一并写上。
+把收发封装成两个工具交给 Lead：`send_message` 固定以 `"lead"` 名义给指定队友写信，`check_inbox` 读取 Lead 收件箱并整理成 `[发件人] 内容` 列表。同时把 `spawn_teammate`、`send_message`、`check_inbox` 一并放进 `SUB_EXCLUDE`，防止 `s06` 的一次性子代理越权操作团队。
 
 本次代码变化：20 行。
 
@@ -52693,7 +52521,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-开始写 `spawnTeammate`。`activeTeammates` 记录当前有哪些队友在工作，同名的队友不能启动两次。每个队友有自己的系统提示词：你叫什么、是什么角色、用工具完成任务、结果用 `send_message` 发给 `lead`。`TEAMMATE_TURNS` 限制一个队友最多跑 10 轮。这一步函数只做了登记，然后返回一句话，队友还不会真的工作。
+开始搭建 `spawnTeammate`。`activeTeammates` 集合用来防重名并发启动，每个队友都有专属 `system` 提示词（告知名字、角色和“完工后向 `lead` 发消息”），并设 `TEAMMATE_TURNS = 10` 控制最大轮数。这一步先立好骨架，下一帧给它配工具。
 
 本次代码变化：13 行。
 
@@ -53893,7 +53721,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-队友有自己的一套工具，只有四个：`bash`、`read_file`、`write_file`，加上 `send_message`。注意它的 `send_message` 和 Lead 的不是同一个实现：发件人固定是队友自己的名字。这里没有 `spawn_teammate`，所以队友不能再启动队友，团队只有一层。
+队友拿到精简后的四个工具：`bash`、`read_file`、`write_file` 和 `send_message`。注意这里的 `send_message` 闭包绑定了队友自己的 `name` 作为发件人，而且故意不提供 `spawn_teammate`，把团队结构收束在“一层 Lead + 多个队友”，避免无限嵌套拉人。
 
 本次代码变化：31 行。
 
@@ -55124,7 +54952,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`run` 是队友的循环，结构你已经很熟悉。有三点不同。第一，每一轮开头先读自己的收件箱，Lead 中途发来的指示会被放进对话。第二，执行工具前同样触发 `PreToolUse`，队友也受权限约束。第三，循环结束后，把最后的回答用 `sendMessage` 发给 `lead`，类型是 `result`。启动方式和 s13 的后台任务一样：`Promise.resolve().then(run)`，不写 `await`，所以 `spawnTeammate` 会马上返回，队友在后台继续。出错时把错误发给 Lead，结束时从 `activeTeammates` 里移除。
+`run` 就是队友自己的多轮循环，核心结构与主循环一致，有三处关键细节：每轮开头先读自己收件箱接收 Lead 新指示；执行工具前照样走 `PreToolUse` 权限门；结束时用 `sendMessage` 把摘要作为 `result` 发回 `lead`。外层用不带 `await` 的 `Promise.resolve().then(run)` 派发，`.catch` 兜底上报错误，`.finally` 释放活跃名额。
 
 本次代码变化：32 行。
 
@@ -56387,7 +56215,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后把启动队友做成工具。Lead 调用 `spawn_teammate`，给出名字、角色和任务说明，队友就开始在后台工作，Lead 立刻拿到一句“已启动”，可以继续做自己的事或者再启动别的队友。
+把 `spawnTeammate` 包装成 `spawn_teammate` 工具接入 Lead 的 `tools` 和 `handlers`。只要模型给出 `name`、`role` 和 `prompt`，队友就会在后台启动，Lead 立刻收到“已启动”回执，可以继续派发其他队友或处理自己的工作。
 
 本次代码变化：9 行。
 
@@ -57663,7 +57491,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-队友做完会把结果发到 Lead 的收件箱，但 Lead 不一定记得去调用 `check_inbox`。所以在 loop 每一轮开头自动读一次：有消息就加上 `[Inbox] From 谁` 的前缀，作为 user 消息放进 `messages`。这和 s13 的后台通知、s14 的定时任务是同一种做法：外面发生的事，都变成一条消息进入对话。提示符改成 `s15 >> `。
+模型未必每次都记得主动调 `check_inbox`。我们在 `agentLoop` 每轮开头顺手读一次 `readInbox("lead")`，把收到的消息拼上 `[Inbox] From <发件人>:` 注入 `messages`。沿用 `s13` 后台通知、`s14` 定时任务的同一套路：外部事件一律转成 `user` 消息喂给主循环。最后把 CLI 提示符更新为 `s15 >> `。
 
 本次代码变化：5 行。
 
@@ -58940,30 +58768,32 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-多个 agent 同时工作，日志混在一起很难分辨，所以这一章从 `helper.js` 引入 `colorLog`，用颜色区分：黄色的 `[bus]` 表示有一条消息从谁发给了谁，青色表示队友启动，绿色表示队友结束。运行时看这三种颜色的先后顺序，就能看出团队是怎么配合的。
+多个 Agent 并发跑起来后，纯白文字混在一起很难分清谁在干什么。最后引入 `helper.js` 的 `colorLog`，用三种颜色标出关键事件：黄色 `[bus]` 表示邮箱投递，青色 `[teammate]` 表示队友启动，绿色 `[teammate]` 表示队友收尾。看着颜色交替，就能一眼理清团队协作的时序。
 
 本次代码变化：4 行。
 
 ### 测试 Prompt
 
-试试这些 prompt：
+依次输入下面两句：
 
 ```text
 Spawn alice as a backend developer. Ask her to create a file called schema.sql with a users table.
 Check your inbox for alice's result.
 ```
 
-观察重点：第一句应该触发 `spawn_teammate`，并看到彩色 `[teammate]` 日志；Alice 完成后会通过 `[bus] alice → lead` 写入 `.mailboxes/lead.jsonl`。第二句应该触发 `check_inbox` 或在下一轮读取 inbox，把 Alice 的结果带回主对话。
+运行后可以看到彩色日志：青色 `[teammate]` 表示启动 Alice，黄色 `[bus] alice → lead` 表示她把结果写入 `.mailboxes/lead.jsonl`，绿色 `[teammate]` 表示她结束工作。第二句会触发 `check_inbox` 或由下一轮开头自动注入 `[Inbox] From alice:`。若某轮结束后磁盘上仍留着 `.mailboxes/lead.jsonl`，说明里面还有尚未被 Lead 消费的新消息，等下一次 `check_inbox` 或下一轮开头就会读出并清理。
 
-如果运行后看到 `.mailboxes/lead.jsonl` 里有 `alice -> lead` 的 JSONL 消息，这是正常结果：说明 Alice 在 lead 回复后才完成，消息还没被下一轮消费。
+### 扩展阅读：商业级 Agent 怎么做团队协作
 
-### 扩展阅读：真实 Coding Agent 怎么做团队
+不同产品对“多 Agent 协作”的定位各有侧重，重点在于隔离边界和协作成本的权衡：
 
-Claude Code 的 Agent Teams 是真正的多 Claude Code 实例协作：一个 session 是 lead，多个 teammate 各自有独立 context window，可以直接互相发消息，也可以通过共享任务列表协调工作。官方文档也强调它更适合并行研究、代码审查、跨层任务，不适合强顺序依赖或同文件频繁冲突的任务。参考：[Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams)。
+- **Claude Code**：Agent Teams 支持真正的多实例协作，一个 Lead 协调多个带独立上下文窗口的 teammate，可互相发消息并共享任务列表；官方也明确建议用于并行调研、代码审查和跨层任务，避免多人频繁改同一文件。参考 [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams)。
+- **Codex**：公开能力侧重 subagents 与云端并行任务，主会话按需并行拉起继承当前 sandbox / approval 策略的子代理并汇总结果，更偏“受控委派”。参考 [Codex Subagents](https://developers.openai.com/codex/subagents) 与 [Codex Web](https://developers.openai.com/codex/cloud)。
+- **opencode**：区分 primary agent 与 subagent（内置 Build、Plan、General、Explore 等角色），支持按角色配置独立模型、提示词和权限，也可用 `@` 手动点名。参考 [opencode Agents](https://opencode.ai/docs/agents/)。
 
-Codex 当前公开文档更强调 subagents：它可以按你的明确要求并行 spawn 专门 agent，等待结果后汇总成一个回复。子代理会继承当前 sandbox 和 approval 策略，也可以定义 custom agents。Codex Web 还可以把任务放到云端后台并行运行，这更像“远程委派任务”，而不是本章这种本地文件邮箱团队。参考：[Codex Subagents](https://developers.openai.com/codex/subagents) 和 [Codex Web](https://developers.openai.com/codex/cloud)。
+**多 Agent 的核心不是堆数量，而是用可追踪的通信和清晰的权限边界把并行工作管起来。**
 
-opencode 把 agent 分成 primary agent 和 subagent：primary agent 可以切换，subagent 可以由主 agent 自动调用，也可以用 `@` 手动点名。它内置了 Build、Plan、General、Explore、Scout 等角色，并支持给 agent 配模型、prompt 和权限。它更像“可配置角色 + 子会话导航”，不是 Claude Code 那种完整 teammate team。参考：[opencode Agents](https://opencode.ai/docs/agents/)。
+> **本章思考题**：现在队友能通过文件邮箱自由收发文字了，但只要团队一忙起来，同时出现多份待审批计划，或者 Lead 想请某个正干活的队友优雅停机，光靠自由聊天根本对不上“哪条回复对应哪次请求”。怎么在文件邮箱之上叠一层带 `request_id` 的请求-响应协议？下一章 `s16` 我们来做 Team Protocols。
 
 ```js ! agent.js range=17:695
 import {
@@ -60245,59 +60075,18 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s16：Team Protocols —— 协作用 request-response
-队友变多以后，光靠“随口聊天”很快会乱：谁提出了请求，谁批准了计划，哪条回复对应哪件事，都需要一个可追踪的格式。`s16` 在 `s15` 的文件邮箱上加一层团队协议：每个请求都有 `request_id`，每个响应都带着同一个 `request_id` 回来。
+## !!steps s16：Team Protocols - 用 request-response 协议管住团队协作
+上一章 `s15` 给团队搭起了文件邮箱，但消息只是自由文本。只要团队忙起来，多个队友同时发来计划、或者 Lead 想请某个队友优雅停机，光靠自然语言聊天很快就会对不上“哪条回复对应哪件事”。
 
-### 本章目标
+这一章我们在文件邮箱上叠一层团队协议。**Team Protocols 的核心是把自由聊天升级成带 `request_id` 的请求-响应状态机：每个事务从 `pending` 出发，自动回执路由核对请求编号与响应类型，人工审批核对编号与 `pending` 状态，最终单向推进到 `approved` 或 `rejected`。**
 
-`s15` 解决了“队友怎么通信”：用 `.mailboxes/*.jsonl` 传消息。`s16` 解决的是“消息怎么对上号”：用 request-response 协议把请求和响应关联起来。
+### 问题
 
-这一章保留 `s15` 的后台队友、cron queue processor 和文件邮箱，只新增团队协议层。日志上，`[bus]` / `[teammate]` 继续表示队友生命周期和邮箱消息流，`s16` 新增的 `[protocol]` 用来突出 request-response 协议事件。
+没有结构化协议时，异步多 Agent 协作容易在三个地方失控：多个队友同时提交方案，Lead 分不清自己批复的是哪一份；不能强杀正在改文件的队友，却缺少礼貌退出的握手约定；重复响应或错类型响应很容易把状态写乱。
 
-### 新增能力
+### 解决方案
 
-- `pendingRequests`：保存还没完成的协议请求。
-- `request_id`：把请求和响应绑定在一起。
-- `matchResponse`：收到响应后推进状态机。
-- `consumeLeadInbox`：统一读取 lead inbox，并先路由协议响应。
-- `sendMessage(..., metadata)`：邮箱消息新增结构化 metadata，用来保存 `request_id` 和审批结果。
-- `request_shutdown`：lead 请求队友优雅退出。
-- `request_plan`：lead 请求队友提交计划。
-- `review_plan`：lead 审批队友提交的计划。
-- `submit_plan`：队友侧工具，向 lead 提交计划审批请求。
-
-### 为什么这一步重要
-
-协议让团队协作从“聊天记录”变成“可追踪事务”。
-
-- 没有 `request_id`，多个队友同时发计划时，lead 很难知道自己批准的是哪一个。
-- 没有状态机，重复响应、错类型响应、过期响应都会混在一起。
-- 有了统一的 request-response 结构，后面可以继续扩展任务认领、交付确认、冲突协商。
-
-### 参考实现提醒
-
-- `request_id` 是协作里的锚点，没有它就很难匹配异步回复。
-- response 类型要和 request 类型对应，避免把 shutdown 回复当成 plan 回复。
-- 队友协议工具 `submit_plan` 放在队友自己的 tool list 里，不放到 lead 的主工具列表。
-- lead-only 协议工具要从普通 subagent 的工具列表里排除，避免子代理绕过 lead 发团队命令。
-- 本章 JS 版继续沿用 `s15` 的后台 Promise 队友模型，但多了短暂 idle loop。
-- idle loop 不是永久常驻线程；它只是为了教程演示，让队友在完成后还能处理一段时间的后续消息和 shutdown。
-- `submit_plan` 目前只是协议消息，不是强制执行门。队友提交计划后，代码不会自动冻结所有其他工具；生产实现还要增加“等待审批”状态，并在审批前拒绝写文件或执行命令。
-- Lead 不应该用 `sleep && cat file` 反复轮询 teammate 的结果；更清晰的方式是 `check_inbox` 等 teammate 回报，再验证文件。
-
-### 新增函数速览
-
-- `newRequestId()`：内部函数，生成 `req_0000` 这种进程内递增 ID。
-- `resetProtocol()`：测试入口，清空 pending request 并重置序号。
-- `matchResponse(responseType, requestId, approve)`：根据响应类型和 `request_id` 更新 pending 状态。
-- `consumeLeadInbox(routeProtocol)`：读取 lead 收件箱，先把协议响应路由到状态机，再返回消息。
-- `teammateSubmitPlan(fromName, plan)`：队友调用 `submit_plan` 时，创建 `plan_approval` pending request，并写入 lead inbox。
-- teammate idle loop：队友没有新工具要调用时，短暂等待 inbox；收到普通消息就继续跑，收到 shutdown 就回复并退出。
-- `runRequestShutdown({ teammate })`：lead 写入 `shutdown_request`，等待队友回 `shutdown_response`。
-- `runRequestPlan({ teammate, task })`：lead 让队友先提交计划；真正的 pending request 会在队友调用 `submit_plan` 时创建。
-- `runReviewPlan({ request_id, approve, feedback })`：lead 审批计划，并把 `plan_approval_response` 发回队友。
-
-### 流程图
+我们给 `sendMessage` 增加结构化 `metadata`（承载 `request_id` 和 `approve`），用 `pendingRequests` 统一管理“关机握手”和“计划审批”两类事务，并通过 `consumeLeadInbox()` 自动路由回执：
 
 ```mermaid
 sequenceDiagram
@@ -60312,25 +60101,16 @@ sequenceDiagram
   Note over Lead: 更新为 approved / rejected
   Note over Lead,Mate: plan_approval 复用同一套 request_id 状态机
 ```
-```text
-Lead                         Mailbox                         Teammate
- |                              |                               |
- | request_plan                 |                               |
- |----------------------------->| lead → bob: please plan       |
- |                              |------------------------------>|
- |                              |                               | submit_plan
- |                              |<------------------------------|
- |<-----------------------------| bob → lead: plan_approval_request(req_0000)
- | pendingRequests[req_0000] = pending                         |
- |                                                              |
- | review_plan(req_0000, approve=true)                         |
- |----------------------------->| lead → bob: plan_approval_response(req_0000)
- | pendingRequests[req_0000] = approved                        |
-```
+
+这套协议层有三个关键设计：
+
+- **同一张表管两类握手**：Lead 侧新增 `request_shutdown`、`request_plan`、`review_plan`，队友侧新增 `submit_plan`（不放进 Lead 工具池）。`matchResponse()` 路由回执时会同时校验响应类型与 `status === "pending"`；`review_plan` 则按编号校验请求存在且为 `pending` 后写回 `plan_approval_response`（教学版未额外校验 `state.type`）。
+- **队友短暂空闲轮询（idle loop）**：队友完成一轮回复后不立刻退出，而是把 `needsModel` 置为 `false`，每 250ms 检查一次收件箱（最多约 5 秒），空闲时不调模型不花钱，却能接住后续的 `shutdown_request` 或 `plan_approval_response`。
+- **教学边界与日志降噪**：`submit_plan` 只是协议约定而非硬写锁；每轮开头自动注入收件箱只截取 `[Inbox] From ...` 文本（不含 `request_id`），因此查看编号需靠 `check_inbox` 输出或终端青色 `[protocol]` 日志。本章同时精简了上一章的逐轮日志，并在提示词里提醒 Lead 用 `check_inbox` 代替 `sleep` 轮询。
 
 ---
 
-s15 的消息只有一段文字，收到回复时分不清它回的是哪一次请求。所以先做两件事。第一，`sendMessage` 多一个 `metadata` 参数，可以随消息附带一些结构化的信息，比如请求编号。第二，新建一张表 `pendingRequests`，每发出一个需要对方答复的请求，就用编号登记一条，记录类型、谁发的、发给谁，以及状态。状态只有三种：`pending`（等待答复）、`approved`（同意）、`rejected`（拒绝）。`newRequestId` 负责生成编号。
+`s15` 的消息只有纯文本，收到回复时对不上它回应的是哪次请求。我们先补齐基础设施：给 `sendMessage` 增加可选的 `metadata` 参数用来携带 `request_id` 等结构化字段，再建一张 `pendingRequests` 表记录所有待处理请求的类型、收发方、负载与状态（`pending` / `approved` / `rejected`），配好 `newRequestId` 和测试用的 `resetProtocol`。
 
 本次代码变化：12 行。
 
@@ -61621,7 +61401,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-第一种协议是关机。Lead 不能直接把队友停掉，因为队友可能正写到一半。正确的做法是发一个请求，让队友自己收尾。`runRequestShutdown` 生成请求编号，在表里登记一条 `pending` 的记录，然后发出一条类型为 `shutdown_request` 的消息，编号放在 `metadata` 里。照例加上工具的 schema 和登记。子代理的排除名单改成多行，把本章的三个协议工具都加进去。
+先实现第一种协议：关机握手。Lead 不能粗暴强杀队友，而是由 `runRequestShutdown` 生成编号、在 `pendingRequests` 记下 `pending` 状态，再发送一条带 `request_id` 的 `shutdown_request` 消息。同步注册工具 schema 与 `handlers`，并把本章三个 Lead 专属协议工具加入 `SUB_EXCLUDE`，避免子代理越权发号施令。
 
 本次代码变化：26 行。
 
@@ -62938,7 +62718,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-要让队友能收到关机请求，它得一直在线。原来队友的模型一旦不再请求工具，循环就结束了。现在改成：这时只把 `needsModel` 设为 `false`，表示“暂时没事做”，然后进入空闲：每 250 毫秒看一次收件箱，有新消息就把 `needsModel` 改回 `true`，再去调用模型。连续空闲 20 次还没有消息，才真正结束。这样队友空闲时不调用模型，不花钱，但随时能被一条消息叫起来。
+想让队友接住后续发来的关机请求，它不能刚吐完一句文字就马上退出。我们把队友循环改造成“干完活先进入空闲”：模型不再调工具时只将 `needsModel` 置为 `false`，随后每 `250ms` 巡检一次收件箱，有新消息就重新唤醒模型；若连续空闲到达上限才退出。空闲期不调 LLM，既省费用又保持在线响应。
 
 本次代码变化：26 行。
 
@@ -64277,7 +64057,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-现在队友读收件箱时先看消息类型。如果是 `shutdown_request`，先记在 `pendingShutdown` 里，不放进对话。等手头的工作做完，也就是 `needsModel` 为 `false` 的时候，再发回一条 `shutdown_response`，带上同一个请求编号和 `approve: true`，然后退出循环。其他消息仍然作为普通内容交给模型。请求和回应用同一个编号对应，这就是“握手”。
+现在让队友按消息类型分流收件箱：遇到 `shutdown_request` 先存进 `pendingShutdown`，不打断当前正在跑的工具或回复；等手头这轮收尾（`!needsModel`）时，立刻带着原 `request_id` 和 `approve: true` 回发 `shutdown_response` 并跳出循环。请求与回执凭同一个编号对上号，关机握手就成立了。
 
 本次代码变化：13 行。
 
@@ -65627,7 +65407,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-回应到了 Lead 的收件箱，需要把它和原来的请求对上。`matchResponse` 按编号找到请求，检查回应的类型和请求的类型是否对应，并且请求还在 `pending` 状态，然后把状态改成 `approved` 或 `rejected`。已经处理过的请求不会被重复处理。`consumeLeadInbox` 把这件事和读收件箱合在一起：读出消息，凡是带请求编号的回应都先交给 `matchResponse`。主循环开头和 `check_inbox` 都改用它，这样无论从哪里读到回应，请求的状态都会更新。
+回复回到 Lead 邮箱后，需要由状态机来核销。`matchResponse` 按 `request_id` 查表，核对响应类型是否与请求类型匹配且当前仍为 `pending`，再更新为 `approved` 或 `rejected`，防重复处理。`consumeLeadInbox` 在读邮箱时自动把所有 `*_response` 路由给 `matchResponse`，并统一替换掉主循环与 `check_inbox` 里的旧读取调用。
 
 本次代码变化：26 行。
 
@@ -66997,7 +66777,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-第二种协议方向相反：队友向 Lead 请求批准。给队友加一个 `submit_plan` 工具。`teammateSubmitPlan` 的做法和关机请求一样：生成编号，登记一条类型为 `plan_approval` 的 `pending` 记录，把计划内容发给 Lead，编号放在 `metadata` 里。同时让 `check_inbox` 在显示消息时带上类型和请求编号，Lead 才知道该批复哪一个。
+第二种协议方向相反：由队友向 Lead 发起审批请求。我们只在队友自己的 `teamTools` 里新增 `submit_plan`，调用 `teammateSubmitPlan` 生成编号、写入 `plan_approval` 类型的 `pending` 记录，并发出 `plan_approval_request`。同时增强 `check_inbox` 输出格式，附上消息类型和 `req:req_XXXX`，方便 Lead 精准定位审批单号。
 
 本次代码变化：21 行。
 
@@ -68388,7 +68168,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-给 Lead 两个工具。`request_plan` 只是发一条普通消息，请队友先提交计划再动手。`review_plan` 是真正的批复：按请求编号找到记录，确认它还在等待，把状态改成同意或拒绝，然后给提交计划的队友发回一条 `plan_approval_response`，带上编号、是否同意，以及反馈意见。同一个请求不能批复两次。
+给 Lead 补上配套的两个工具：`request_plan` 发一条普通消息催队友先出方案；`review_plan` 按 `request_id` 找到待审记录，校验仍处于 `pending` 后改写为 `approved` 或 `rejected`（防重复批复），再把附带审批结果和反馈意见的 `plan_approval_response` 发回原队友。
 
 本次代码变化：28 行。
 
@@ -69805,7 +69585,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-最后让队友处理批复。读收件箱时如果遇到 `plan_approval_response`，就把它变成一条模型能看懂的消息：同意就是“计划已批准，继续”，拒绝就附上 Lead 的反馈。然后把 `needsModel` 设回 `true`，让模型接着工作。Lead 的系统提示词也补一句：把任务交给队友后，用 `check_inbox` 查看进展，不要用 sleep 循环去等文件。提示符改成 `s16 >> `。
+最后闭合队友侧的审批分支：巡检收件箱遇到 `plan_approval_response` 时，转换成 `[Plan approved] Proceed.` 或 `[Plan rejected] <反馈>` 塞进对话，同时把 `needsModel` 拨回 `true`、重置空闲计数。我们也在 Lead 的 `identity` 提示词里补了一句引导：用 `check_inbox` 跟进队友，不要写 `sleep` 循环干等文件。提示符切到 `s16 >> `。
 
 本次代码变化：11 行。
 
@@ -71229,35 +71009,39 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-协议的每一步都加一行青色的 `[protocol]` 日志：发出请求、收到请求、提交计划、收到批复、状态变化。这样一次握手的来回可以在终端里完整看到。为了让协议日志更显眼，主循环里上一章的几行逐轮日志在这一章删掉了，消息总线和队友启动、结束的日志也改回普通输出。
+最后在协议流转的每个关键节点加上青色/绿色/黄色的 `[protocol]` 日志，让“请求 → 路由 → 批复 → 状态变迁”的完整握手清晰呈现。为了让协议日志成为视觉主角，这一步同步精简了主循环里的逐轮 trace，并把普通 `[bus]` 和 `[teammate]` 日志降回普通输出。
 
 本次代码变化：20 行。
 
 ### 测试 Prompt
 
-试试这个 prompt：
+测试计划审批握手：
 
 ```text
-Spawn bob as a backend developer and ask only for a plan to update README.md. When the plan arrives, approve it by request_id and check your inbox.
+Spawn bob as a backend developer and ask only for a plan to update package.json. When the plan arrives, approve it by request_id and check your inbox.
 ```
 
-观察重点：Bob 应该通过 `submit_plan` 发出 `plan_approval_request`，lead 用同一个 `request_id` 调用 `review_plan`，最后 `pendingRequests` 里的状态从 `pending` 变成 `approved`。本 prompt 不要求 Bob 修改文件，因为本章还没有实现强制审批门。
+运行后可以看到 Bob 调用 `submit_plan` 发出 `plan_approval_request`。对照 `check_inbox` 输出或终端 `[protocol]` 日志拿到 `request_id` 后，Lead 调用 `review_plan` 将该请求推进到 `approved`（若本轮开头已自动消费收件箱，再调 `check_inbox` 可能返回 `(inbox empty)`，此时直接以日志里的 `request_id` 为准）。
 
-也可以单独测试关机握手：
+也可以单独测试优雅关机握手：
 
 ```text
 Spawn alice as a developer, then use request_shutdown for alice and check your inbox.
 ```
 
-观察重点：lead 发 `shutdown_request`，Alice 回 `shutdown_response`，`matchResponse` 把对应请求推进到 `approved`。
+观察青色 `[protocol]` 日志：Lead 发出 `shutdown_request`，处于空闲轮询中的 Alice 回发同编号的 `shutdown_response`，`matchResponse` 随即把该请求更新为 `approved`。
 
-### 扩展阅读：真实 Coding Agent 怎么做团队协议
+### 扩展阅读：商业级 Agent 怎么做团队协议
 
-Claude Code 的 Agent Teams 已经有更完整的团队控制面：lead 可以要求 teammate 先提交 plan，再由 lead 审批；也可以直接和 teammate 对话、分配任务、关闭 teammate。它的核心不是“随便发消息”，而是把团队管理、计划审批、任务列表和 shutdown 都放在一个统一控制面里。参考：[Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams)。
+成熟的商业产品同样把“团队控制面”和“自由对话”分开，让审批、派活与停机都有清晰状态：
 
-Codex 的公开文档更偏向 subagents。Codex 会负责 spawn、等待、汇总和关闭子代理，适合“把多个调查并行跑完再合并结果”。它不像本章这样暴露一个本地 `request_id` mailbox 协议，但它同样强调由主会话编排子代理，并让结果回到主会话统一处理。参考：[Codex Subagents](https://developers.openai.com/codex/subagents)。
+- **Claude Code**：Agent Teams 提供统一的团队控制面，Lead 可以要求 teammate 先提交 plan 再审批，也能统一协调共享任务列表和优雅关闭。参考 [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams)。
+- **Codex**：公开设计偏向主会话编排 subagents，由运行时统一负责 spawn、等待、汇总与回收，把协作协议收拢在编排层内部。参考 [Codex Subagents](https://developers.openai.com/codex/subagents)。
+- **opencode**：通过角色化 primary / subagent 配置与细粒度工具权限控制协作边界，再由提示词与工具约定承载审批流程。参考 [opencode Agents](https://opencode.ai/docs/agents/)。
 
-opencode 把 agent 分成 primary agent 和 subagent，可以用配置定义角色、模型、权限和 prompt，也可以通过 `@agent` 方式点名。它更像“角色化代理 + 权限控制”，协议层可以放在 agent prompt 和工具约定里实现。参考：[opencode Agents](https://opencode.ai/docs/agents/)。
+**一旦给异步通信加上 `request_id` 和状态机，团队协作就从“随口聊天”变成了可追踪、可调试的事务。**
+
+> **本章思考题**：到这里，单个 Agent 的循环、记忆、恢复、任务图、定时调度和多队友协议全都齐了，但所有工具依然写死在源码里。如果明天要接入公司文档库、数据库或部署平台，总不能每次都改主文件重发。怎么用标准协议在运行时动态发现外部工具，并无缝接进同一条循环和权限门？下一章 `s17` 我们来做 MCP Plugin。
 
 ```js ! agent.js range=587:827
 import {
@@ -72696,78 +72480,42 @@ if (isMainModule(import.meta.url)) {
 }
 ```
 
-## !!steps s17：MCP Plugin —— 外部工具进入统一控制面
-一个 coding agent 不可能把搜索、数据库、浏览器、部署平台和公司内部系统全写进主文件。`s17` 用一个可运行的 mock MCP hub 演示：外部工具被发现以后，怎样和内置工具共用同一条 agent loop。
+## !!steps s17：MCP Plugin - 外部工具接入同一条控制面
+前面 `s00` 到 `s16` 已经把 Agent 的内置能力拼齐了：工具调用、权限拦截、上下文压缩、持久化记忆、任务图、后台并发、定时调度、多 Agent 团队与通信协议。但现实里没有哪个 Code Agent 能把文档检索、数据库查询、浏览器操控、部署平台和公司内部系统全硬编码进主文件。
 
-### 本章目标
+这一章我们引入 **MCP（Model Context Protocol）插件接入层**。用一个不依赖网络的本地模拟 MCP Hub 演示最核心的设计：**外部工具被动态发现后，统一标准化成 schema 和 handler，直接并入主循环的工具池和执行前拦截入口，不用另写第二套循环逻辑。**
 
-`s16` 已经有动态 prompt、权限 hook、任务、后台执行、团队和协议。`s17` 保留这些能力，只增加一条外部工具接入路径：
+### 问题
 
-1. 模型调用 `connect_mcp` 连接一个 mock server。
-2. hub 返回该 server 暴露的工具定义。
-3. 工具名被改成 `mcp__server__tool`，避免和内置工具重名。
-4. 下一轮模型请求使用更新后的工具池和 system prompt。
-5. 模型调用 MCP 工具时，仍走权限检查、handler 分发和 `tool_call_id` 回灌。
+如果每接一个外部系统（文档库、发布系统、工单平台、监控看板）都要修改 Agent 主源码、手动写死工具和分支逻辑，代码会迅速膨胀且无法复用。我们需要一条标准扩展路径：运行时按需连接外部服务、发现它暴露的工具、防止工具名和内置工具撞车，并在同一条主循环的调度与拦截入口里管住高危外部调用。
 
-### 为什么这一步重要
+### 解决方案
 
-MCP 的价值不是“多几个工具”，而是把第三方能力转换成 agent 已经认识的工具 schema 和 handler。工具来源可以不同，但模型选择、权限判断、执行和结果回灌不需要另写一条 loop。
-
-### 教学版边界
-
-本章没有实现真正的 MCP transport。`createMockMcpHub()` 没有 JSON-RPC `initialize`、`tools/list`、`tools/call`、stdio / HTTP transport、OAuth、断线重连或 `list_changed` 通知。
-
-当前动态 MCP 工具只合并进 lead 的主 `agentLoop()`；s06 subagent 和 s15 teammate 仍使用各自固定工具列表。若要让它们共享 MCP，需要在创建子 agent 时也调用 `allTools()`，再按角色过滤权限。
-
-### 新增函数速览
-
-- `prefixedMcpName(serverName, toolDef)`：生成 `mcp__docs__search` 形式的全局工具名。
-- `createMockMcpHub()`：创建内置 `docs`、`deploy` server，并保存已连接 server。
-- `resetMcp()`：测试入口，重建 hub 并清空 system prompt 缓存。
-- `mcpToolSchemas()`：把已发现工具转成模型可接收的 function tool schema。
-- `allTools()`：合并内置工具与当前已发现的 MCP 工具。
-- `findMcpTool(name)` / `getHandler(name)`：按名字查找 MCP 定义，并把内置与外部 handler 统一到一个分发入口。
-- `runConnectMcp({ name })`：连接 mock server，打印新发现的工具，并让 prompt 缓存失效。
-
-### 流程图
+我们给主循环增加一条动态工具发现路径：先提供 `connect_mcp` 内置工具，让模型按需连接本地模拟 MCP Hub（内置 `docs` 和 `deploy` 两个服务）；连上后把发现的工具统一加上 `mcp__服务名__工具名` 前缀，通过 `allTools()` 与内置工具合并发给模型；执行阶段先过主循环统一的拦截入口，再由 `getHandler()` 统一分发并按原始 `tool_call_id` 写回结果：
 
 ```mermaid
 flowchart TD
   subgraph AGENT["Agent 侧"]
     CM["connect_mcp<br/>连接服务，发现工具"] --> POOL["allTools<br/>内置工具 + MCP 工具<br/>命名：mcp__服务名__工具名"]
-    POOL --> CALL["调用 mcp__docs__search 等工具"]
+    POOL --> CALL["权限检查 + getHandler<br/>调用 mcp__docs__search 等工具"]
   end
   subgraph SERVERS["MCP 服务（外部）"]
     D["docs 服务<br/>search · get_version"]
-    DP["deploy 服务<br/>trigger · status"]
+    DP["deploy 服务<br/>status · trigger（destructive）"]
   end
-  CM -->|tools/list| SERVERS
-  CALL <-->|tools/call 与响应| SERVERS
+  CM -->|发现工具（模拟 tools/list）| SERVERS
+  CALL <-->|调用与结果（模拟 tools/call）| SERVERS
 ```
-```text
-内置 tools
-    |
-    +--------------------------+
-    |                          |
-    v                          |
-connect_mcp("docs")            |
-    |                          |
-    v                          |
-mock hub 发现 search/version  |
-    |                          |
-    v                          |
-mcp__docs__search schema ------+
-    |
-    v
-allTools() -> call LLM -> tool_calls
-    |
-    v
-同一权限门 -> getHandler() -> tool result 回灌
-```
+
+这里有三个关键设计点：
+
+- **动态刷新工具池与提示词**：`connect_mcp` 连上服务后会立刻调用 `resetSystemPromptCache()`，下一轮的 `buildContext()` 和 `callLlm()` 都从 `allTools()` 取最新工具清单，让模型无缝感知新工具。
+- **在同一调度入口拦截破坏性外部工具**：内置 `permissionHook` 目前只检查 `bash` 命令；主循环紧挨着 `PreToolUse` hook 加了一条 `mcpTool?.annotations?.destructive` 分支，调用前先查元数据，命中破坏性标记（如 `deploy.trigger`）就直接返回 `Permission blocked`。
+- **教学版边界**：本地 `createMockMcpHub()` 只演示工具发现、合并与拦截闭环，不含真实 JSON-RPC（`initialize` / `tools/list` / `tools/call`）、stdio/HTTP transport、OAuth 或 `list_changed` 通知；`readOnly`/`destructive` 是教学简写（MCP 正式规范为 `readOnlyHint`/`destructiveHint`，且仅作提示不能替代服务信任与审批）；动态 MCP 工具目前只并入 Lead 主循环，子代理与队友仍用各自固定工具集。
 
 ---
 
-到目前为止，所有工具都是我们自己写在文件里的。MCP 是一种约定，让外部的服务器把它的工具提供给 agent 使用。不同服务器可能有同名的工具，所以先定一个命名规则：`mcp__服务器名__工具名`。`prefixedMcpName` 负责拼出这个名字，看到 `mcp__` 开头就知道它来自外部。
+到现在为止，所有工具都硬编码在主文件里。接进外部 MCP 服务后，不同服务器很可能暴露同名工具（比如都叫 `search` 或 `status`）。我们先约定统一的命名规则 `mcp__服务器名__工具名`，由 `prefixedMcpName` 负责拼接，这样既避免与内置工具撞名，也让模型和日志一眼认出它来自外部服务。
 
 本次代码变化：4 行。
 
@@ -74197,7 +73945,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`createMockMcpHub` 创建一个模拟的 MCP 中心。里面有两张表：`servers` 是“有哪些服务器可以连”，`connected` 是“已经连上了哪些”。`connect` 按名字找到服务器，放进 `connected`；名字不存在就抛出错误。真实的 MCP 客户端在这里会启动进程或发起网络连接，再问对方“你有哪些工具”，模拟版本省掉了这些，但先连接、后发现的顺序是一样的。
+`createMockMcpHub` 用两张 Map 模拟外部服务注册中心：`servers` 保存可连接的服务清单，`connected` 记录当前已经连上的服务。调用 `connect(name)` 按名字查找并加入已连接集合，找不到就抛错。真实 MCP 客户端在这里会走 stdio 或 HTTP 握手，本地模拟版省掉网络依赖，但保留了完全一致的“先连接、再发现”顺序。
 
 本次代码变化：16 行。
 
@@ -75643,7 +75391,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-往中心里登记第一个服务器 `docs`，它提供两个工具：`search` 搜索文档，`get_version` 返回版本号。每个工具的描述方式和我们自己的工具差不多：名字、说明、参数结构，再加一个真正执行的 `handler`。多出来的是 `annotations`，这是服务器对工具性质的声明，这两个都标着 `readOnly`，表示只读、不会改动任何东西。
+往中心里挂上第一个外部服务 `docs`，暴露 `search` 和 `get_version` 两个工具。除了熟悉的名称、描述、参数 schema 和 `handler` 外，还多了一个 `annotations` 字段用来声明工具性质；这两个都标着 `readOnly: true`，表示纯只读操作。
 
 本次代码变化：28 行。
 
@@ -77117,7 +76865,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-再登记一个服务器 `deploy`，也有两个工具：`status` 查看部署状态，是只读的；`trigger` 触发一次部署，它的 `annotations` 标着 `destructive`，表示这是一个有破坏性的操作。稍后我们会用这个标记来决定要不要拦截它。
+再挂上第二个服务 `deploy`，同样包含两个工具：`status` 查看部署状态，标为 `readOnly: true`；`trigger` 触发发布动作，在 `annotations` 里显式标出 `destructive: true`。待会儿我们会用这个破坏性标记演示权限拦截。
 
 本次代码变化：32 行。
 
@@ -78623,7 +78371,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-`discoveredTools` 列出所有已连接服务器的工具，并把名字换成带前缀的形式。`mcpToolSchemas` 用我们一直在用的 `tool()` 把它们转成模型认识的 schema。`allTools` 把内置的 `tools` 和这些 schema 拼成一个数组。因为每次都是现算的，刚连上一个服务器，下一次调用 `allTools` 就会多出它的工具。`resetMcp` 给测试用，换一个全新的中心，并清掉系统提示词的缓存。
+`discoveredTools()` 汇总所有已连接服务的工具并套上 `mcp__server__tool` 前缀；`mcpToolSchemas()` 复用 `tool()` 把它们转成标准 OpenAI-compatible function schema；`allTools()` 则动态拼接内置 `tools` 与外部 MCP 工具。只要新连上服务，下一次调 `allTools()` 就能立刻看到新工具。顺手导出 `resetMcp()` 供测试清理状态和提示词缓存。
 
 本次代码变化：24 行。
 
@@ -80155,7 +79903,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-把连接做成工具交给模型。`runConnectMcp` 连接指定的服务器，比较连接前后的工具列表，打印新发现了哪些工具，然后清掉系统提示词的缓存，因为 s10 的提示词里列着工具名，现在工具变多了，需要重新拼。连接失败时返回错误信息，不抛异常。`describeToolCall` 也补一个分支，让 MCP 相关的调用在日志里显示完整的名字和参数。
+把连接动作做成内置工具交给模型：`runConnectMcp` 调用 `mcpHub.connect(name)`，对比前后清单打印 `[mcp] discovered: ...`，然后调用 `resetSystemPromptCache()` 触发 `s10` 系统提示词重拼，出错则返回友好错误文案不崩主循环。顺手在 `describeToolCall` 里补上分支，让终端日志完整打印 `connect_mcp` 和 `mcp__*` 的参数。
 
 本次代码变化：25 行。
 
@@ -81716,7 +81464,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-现在把合并后的工具接进 loop，一共三处。调用模型时传 `allTools()`，模型从此能看到 MCP 工具。`buildContext` 也用 `allTools()`，系统提示词里的工具清单保持同步。执行时改用 `getHandler` 找处理函数：先看是不是 MCP 工具，是就用服务器提供的 `handler`，不是再查原来的 `handlers` 表。loop 的结构没有变化，对它来说，外部工具和内置工具走的是同一条路。
+这一步只动三个接入点，就把外部工具彻底融进了原有循环：`buildContext()` 改读 `allTools()`，让动态提示词里的工具列表保持同步；`callLlm()` 传入 `tools: allTools()`；执行分支统一改调 `getHandler(name)`（先查 MCP 工具，再回退内置 `handlers`）。整条 `agentLoop` 骨架纹丝不动。
 
 本次代码变化：17 行。
 
@@ -83288,7 +83036,7 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps
-外部工具同样要受权限约束。执行前先用 `findMcpTool` 查一下这个工具，如果它的 `annotations` 标着 `destructive`，就不执行，直接把“已拦截”作为结果交还给模型。所以模型可以调用 `mcp__deploy__status`，但调用 `mcp__deploy__trigger` 会被拦下。这只是最简单的规则，真实系统会在这里询问用户。提示符改成 `s17 >> `，整个 agent 的代码到这里就完整了。
+外部工具绝不能绕开安全门。执行前先用 `findMcpTool(name)` 查出元数据，若 `annotations.destructive` 为真就直接拦截，把 `Permission blocked` 回传给模型。这样 `mcp__deploy__status` 可以放行，而 `mcp__deploy__trigger` 会被稳稳挡下（真实系统这里还会弹出人工审批）。最后把 CLI 提示符切到 `s17 >> `，整套可运行 Code Agent 主线代码到此全部完工！
 
 本次代码变化：5 行。
 
@@ -83298,15 +83046,19 @@ if (isMainModule(import.meta.url)) {
 连接 docs MCP 搜索 agent loop；再连接 deploy MCP 查询 api 状态，最后尝试 trigger api 并说明为什么被拦截。
 ```
 
-观察重点：连接前不存在 `mcp__docs__search`；连接后下一轮工具池出现它。`mcp__deploy__status` 可以执行，带 destructive 标记的 `mcp__deploy__trigger` 应返回 `Permission blocked`。
+运行后可以重点观察三件事：连接前工具池里没有 `mcp__docs__search`，调用 `connect_mcp("docs")` 后终端会打印 `[mcp] discovered: mcp__docs__search, mcp__docs__get_version`，下一轮即可直接搜索文档；随后 `mcp__deploy__status` 正常返回状态，而带 `destructive` 标记的 `mcp__deploy__trigger` 会被拦截并返回 `Permission blocked`。
 
-### 扩展阅读：真实 Coding Agent 怎么接 MCP
+### 扩展阅读：商业级 Agent 怎么接 MCP
 
-- Claude Code 支持本地 stdio 和远程 HTTP MCP server，能处理 OAuth、动态 `list_changed`、重连和 tool search；MCP 工具与手动配置工具一起进入会话，但项目级 server 仍需要信任确认。
-- Codex CLI 和 IDE 可以作为 MCP client 连接 `config.toml` 中的 server；Codex 也能以实验性 MCP server 运行。app-server 还提供 MCP 状态、资源读取、OAuth 和工具调用接口。
-- OpenCode 支持本地与远程 MCP server，并允许用和内置工具相同的 permission 规则控制单个 MCP 工具或整个 server。
+真实产品对接 MCP 时，除了把工具并进统一循环，还要处理传输协议、鉴权和信任边界：
 
-参考：[MCP tool schema](https://modelcontextprotocol.io/specification/2025-11-25/schema)、[Claude Code MCP](https://code.claude.com/docs/en/mcp)、[Codex MCP support](https://github.com/openai/codex/blob/main/codex-rs/README.md)、[OpenCode MCP servers](https://opencode.ai/docs/mcp-servers)。
+- **Claude Code**：支持本地 stdio 和远程 HTTP MCP server，处理 OAuth、动态 `list_changed`、断线重连和按需工具检索；项目级配置的新 server 必须经过用户信任确认后才会启用。参考 [Claude Code MCP](https://code.claude.com/docs/en/mcp)。
+- **Codex**：CLI 与 IDE 可作为 MCP client 连接 `config.toml` 中配置的服务，同时自身也能以实验性 MCP server 模式运行，支持状态查询、资源读取和 OAuth。参考 [Codex MCP support](https://github.com/openai/codex/blob/main/codex-rs/README.md)。
+- **opencode**：支持本地与远程 MCP server，并允许用与内置工具一致的 permission 规则按单个工具或整个 server 做放行、询问或拒绝控制。参考 [OpenCode MCP servers](https://opencode.ai/docs/mcp-servers) 与 [MCP tool schema](https://modelcontextprotocol.io/specification/2025-11-25/schema)。
+
+**MCP 真正的威力不是“多塞几个工具”，而是把第三方能力规范成相同的 schema 和 handler，接入同一套循环与权限控制面。**
+
+> **本章思考题**：从 `s00` 的一次 HTTP 请求走到 `s17` 的可扩展 Agent Runtime，代码主线已经完整落地。但往底层再多看一层：为什么对话越长请求往往越慢？模型内部到底是怎么逐个算出下一个 Token 的，KV Cache 和我们写过的上下文压缩、固定前缀 System Prompt 又是什么关系？收官篇 `s18`，我们把推理底层掀开一层，再给你一张后续进阶的扩展阅读地图。
 
 ```js ! agent.js range=1475:1558
 import {
@@ -84875,21 +84627,21 @@ if (isMainModule(import.meta.url)) {
 ```
 
 ## !!steps s18：扩展阅读路线图
-前面的章节已经搭出了一个可运行的 Code Agent。这一章暂时不再增加功能，而是先建立一张扩展阅读地图，记录后续值得继续研究的技术方向。
+从 `s00` 的一次 HTTP 请求走到 `s17` 的 MCP 插件扩展，我们已经手写出了一个完整的 Code Agent 主线。这一章不再继续堆新功能，而是先掀开模型推理的底层，把“为什么对话越长请求越慢、KV Cache 到底缓存了什么”讲透，再给出一张后续进阶的扩展阅读地图。
 
-目前只展开第一个主题“从 Attention 到 KV Cache”。其他主题先保留标题和问题，等主线项目完成后再逐篇补充。
+目前本章先展开第一个底层主题“从 Attention 到 KV Cache”，其他方向先保留核心问题清单，方便你按自己的兴趣继续深挖。
 
-> 本章没有独立 JavaScript 文件。互动页面右侧继续展示 `s17` 的完整 Agent，左侧阅读扩展路线图。
+> 本章没有独立 JavaScript 文件。互动页面右侧继续展示 `s17` 的完整 Agent，左侧阅读底层原理与扩展路线图。
 
 ### 已展开：从 Attention 到 KV Cache
 
-在 `s00` 里，我们把完整的 `messages` 发给模型，然后等待它逐个生成新 Token。随着对话越来越长，你会发现请求通常也会越来越慢。
+回想我们从 `s00` 发起单次 HTTP 请求、到 `s01` 写下 `agentLoop` 开始：每一轮请求都要把当前上下文 `messages` 发给模型，再等它逐个吐出新 Token。用过几轮工具之后你一定有体感：上下文越长，首字响应往往越慢，Token 账单也涨得越快。
 
-要理解其中的原因，需要把 HTTP 接口再向下拆一层：模型内部如何使用 Transformer 的注意力机制生成下一个 Token，以及 KV Cache 为什么能减少重复计算。
+要真正看懂原因，我们得把 HTTP 接口再往下掀一层：模型内部是怎么用 Transformer 的注意力机制算出下一个 Token 的，KV Cache 又为什么能省掉大量重复计算。
 
 #### 1. 文本先变成 Token
 
-模型不能直接计算文字。输入文本会先经过 Tokenizer，变成一串 Token ID，再转换成向量：
+模型并不直接“读汉字”或“读代码”。输入文本会先经过 Tokenizer 切成一串 Token ID，再查表映射成向量：
 
 ```text
 "Code Agent 会使用工具"
@@ -84901,11 +84653,11 @@ if (isMainModule(import.meta.url)) {
 [向量 1, 向量 2, 向量 3, ...]
 ```
 
-这些向量进入多层 Transformer。每一层都会通过 Self-Attention，让当前 Token 从前面的 Token 中寻找与自己有关的信息。
+这些向量随后进入多层 Transformer。每一层的核心动作都是 Self-Attention：让当前 Token 去翻看前面的历史 Token，找出和自己最相关的信息。
 
 #### 2. Attention 在做什么
 
-在每一层中，Token 向量会分别乘以三组权重，得到 Query、Key 和 Value：
+在每一层里，Token 向量会分别乘以三组投影权重，算出 Query、Key 和 Value：
 
 ```text
 Q = XWq
@@ -84913,19 +84665,19 @@ K = XWk
 V = XWv
 ```
 
-可以先用“查资料”来理解它们：
+用“去图书馆查资料”来对应这三个角色最直观：
 
-- `Query`：当前 Token 想查什么。
-- `Key`：每个历史 Token 的索引特征。
-- `Value`：每个历史 Token 真正携带的信息。
+- `Query`：当前 Token 拿着的问题（我想查什么）。
+- `Key`：每个历史 Token 贴在书脊上的索引标签。
+- `Value`：每个历史 Token 书页里真正装着的内容。
 
-Attention 的核心计算可以简化为：
+Attention 的核心计算可以写成一行公式：
 
 ```text
 Attention(Q, K, V) = softmax(QK^T / sqrt(d))V
 ```
 
-先用当前 Query 和所有 Key 计算相关程度，再按相关程度汇总对应的 Value。生成式模型还会加上 Causal Mask，保证当前位置只能看到自己和前面的 Token，不能偷看未来。
+先拿当前 `Query` 和所有历史 `Key` 算相关度分数，归一化成权重，再按权重加权汇总对应的 `Value`。生成式大模型还会叠一层 Causal Mask（因果掩码），保证当前位置只能看到自己和前面的 Token，不能偷看后面的未来位置：
 
 ```text
 当前 Token 的 Q
@@ -84940,15 +84692,14 @@ Attention(Q, K, V) = softmax(QK^T / sqrt(d))V
 按权重汇总历史 Token 的 V
 ```
 
-这就是 Transformer 从上下文中寻找信息的基本过程。
+这就是 Transformer 从上下文中提取信息的基本骨架。
 
 #### 3. 大模型如何逐个生成 Token
 
-一次文本生成通常可以分成两个阶段。
+模型每次回复并不是“一口气吐出整段话”，而是分两个阶段推进：
 
-第一阶段叫 **Prefill**。模型一次处理 Prompt 中已有的全部 Token，并为每一层计算出对应的 Key 和 Value。
-
-第二阶段叫 **Decode**。模型根据 Prompt 预测一个新 Token，再把这个 Token 放回序列，继续预测下一个：
+- **Prefill（预填充）**：一次性并行处理 Prompt 中已有的全部 Token，为每一层算出所有历史 Token 的 Key 和 Value，并吐出第 1 个新 Token。
+- **Decode（解码）**：把刚生成的 Token 拼回序列末尾，再预测下一个 Token，如此循环直到吐出结束符或撞上 `max_tokens` 上限：
 
 ```text
 Prompt -> Prefill -> 生成 Token A
@@ -84958,32 +84709,32 @@ Prompt + Token A ------+-> 生成 Token B
 Prompt + Token A + Token B ---+-> 生成 Token C
 ```
 
-如果没有缓存，每生成一个新 Token，都要重新处理前面整段没有变化的内容，并再次计算它们的 Key 和 Value。上下文越长，重复工作越多。
+如果没有缓存，Decode 阶段每多吐一个 Token，都要把前面纹丝不动的大段 Prompt 重新算一遍 Key 和 Value。上下文越长，浪费的算力就越惊人。
 
 #### 4. KV Cache 缓存了什么
 
-KV Cache 的做法很直接：把每一层已经计算过的 Key 和 Value 保存起来。
+KV Cache 的思路非常直接：既然历史 Token 的 Key 和 Value 在后续生成中不会变，就把每一层已经算好的 K 和 V 留在显存里。
 
-生成下一个 Token 时，模型只计算新 Token 的 Q、K、V，然后把新的 K、V 追加到缓存。新的 Query 可以直接读取全部历史 K、V：
+轮到 Decode 生成下一个新 Token 时，模型只需为这 1 个新 Token 计算它的 Q、K、V，把新 K、V 追加进缓存，再用新 Query 去查整份历史 KV Cache 即可：
 
 ```text
 Prefill
-  -> 保存每层的 K1...Kn、V1...Vn
+  -> 一次算完并缓存每层的 K1...Kn、V1...Vn
 
 Decode 一个新 Token
-  -> 只计算新的 Q、K、V
+  -> 只算新 Token 的 Q、K、V
   -> 新 K、V 追加到 KV Cache
   -> 新 Q 对全部缓存 K、V 做 Attention
   -> 预测下一个 Token
 ```
 
-为什么不叫 QKV Cache？因为旧 Token 的 Query 已经在它们各自生成时使用过了。未来生成新 Token 时，需要的是“新 Query 查询历史 Key 和 Value”，旧 Query 不需要重复使用。
+到这里你可能会顺手问一句：为什么叫 KV Cache，不叫 QKV Cache？因为旧 Token 的 `Query` 只在生成它自己那一步用过一次，后面再预测新 Token 时，需要的是“新 Query 去查历史 Key 和 Value”，旧 Query 不会再被用到。
 
-因此，KV Cache 没有改变模型的回答逻辑，它只是用显存换计算时间，让 Decode 阶段不必反复计算相同的历史内容。
+所以 KV Cache 并没有改变模型的数学输出，它是典型的“用显存换算力”，把 Decode 阶段从反复重算历史解放出来。
 
 #### 5. 它为什么又快又占显存
 
-KV Cache 的大小会随着上下文长度近似线性增长。可以用下面的公式建立一个粗略印象：
+KV Cache 省了计算，代价是显存占用会随上下文长度线性上涨。可以用下面的估算公式建立直觉：
 
 ```text
 KV Cache 字节数
@@ -84992,137 +84743,137 @@ KV Cache 字节数
   K 和 V 两份
 ```
 
-所以它有一个很明确的交换关系：
+这里立刻能看到一对核心权衡：
 
-- 缓存越多历史 Token，生成后续 Token 时越省计算。
-- 上下文越长、并发请求越多，KV Cache 占用的显存越大。
-- GQA、MQA、KV Cache 量化和 PagedAttention，都是继续降低或管理这部分成本的常见方向。
+- 缓存的历史 Token 越多，Decode 越省算力；
+- 上下文越长、并发请求越多，KV Cache 吃掉的显存就越大。
 
-生产级推理框架不会只用一个不断扩大的数组保存缓存。例如 vLLM 的 PagedAttention 会把 KV Cache 切成块管理，思路类似操作系统的虚拟内存分页，从而减少显存碎片并提高并发能力。
+工业界常见的优化几乎全围着这个公式转：GQA / MQA 减少 KV Head 数量，KV Cache 量化压缩每个数值的字节数；而 vLLM 的 PagedAttention 则借用操作系统虚拟内存分页的思路，把 KV Cache 切块管理，消除显存碎片并大幅拉高并发吞吐。
 
 #### 6. KV Cache、Prompt Cache 和 messages 不是一回事
 
-这三个概念经常同时出现，但它们处在不同层次：
+做 Agent 开发时，这三个词经常混在一起出现，其实它们分属三个完全不同的层次：
 
 | 概念 | 保存什么 | 主要作用 | 通常由谁管理 |
 |---|---|---|---|
-| `messages` | user、assistant、tool 等消息 | 表达对话语义 | Agent 应用 |
-| KV Cache | Transformer 每一层的 K/V 张量 | 加速当前生成过程 | 模型推理服务 |
-| Prompt / Prefix Cache | 相同 Prompt 前缀对应的可复用计算结果 | 减少跨请求的重复 Prefill | Provider 或推理框架 |
+| `messages` | user、assistant、tool 等消息文本 | 维护对话语义与工具历史 | Agent 应用代码 |
+| KV Cache | Transformer 每一层的 K / V 张量 | 加速单次生成的 Decode 阶段 | 模型推理引擎 |
+| Prompt / Prefix Cache | 相同 Prompt 前缀对应的可复用计算状态 | 减少多次请求间的重复 Prefill | 模型 Provider 或推理框架 |
 
-在当前 `s00` 中，`runChatCli()` 保存的是 `messages`。每次调用 `callLlm()`，客户端仍然会把完整历史重新发送给 Provider。
+回想我们在 `s00` 的 `runChatCli()` 以及从 `s01` 一路演进到 `s17` 的 `agentLoop()`：客户端代码维护的始终是 `messages`；早期章节每轮调 `callLlm()` 会把完整历史发给服务端，到 `s08` 引入上下文压缩之后，则是先把裁剪或摘要后的 `messages` 发给服务端。
 
-Provider 会在一次文本生成过程中使用 KV Cache，但独立 HTTP 请求之间能否复用前缀，取决于它是否支持 Prompt Cache 或 Prefix Cache。客户端不能因为上一轮问过同样的内容，就默认下一轮一定会复用 KV Cache。
+推理引擎在单次生成中通常会开启 KV Cache 来加速 Decode（属于可配置推理优化），而**多次独立 HTTP 请求之间能不能复用前缀**，则取决于 Provider 或推理框架是否支持 Prompt Cache / Prefix Cache（例如基于共享前缀复用已算好的 KV 状态），以及你的请求前缀有没有频繁变动。
 
-#### 7. 这和 Code Agent 有什么关系
+#### 7. 回扣整套课程：这和我们写过的 Code Agent 有什么关系
 
-Agent Loop 会反复请求模型：模型调用工具，程序把工具结果追加到 `messages`，然后再次调用模型。随着循环推进，Prompt 会不断变长。
+把底层推理和前面 17 章的代码连起来看，很多工程决策就一下子说得通了。在 Agent Loop 里，每一轮工具调用都会让请求不断滚雪球：
 
 ```text
-第 1 次请求：用户任务
-第 2 次请求：用户任务 + tool_call + tool_result
+第 1 次请求：System Prompt + 用户任务
+第 2 次请求：System Prompt + 用户任务 + tool_call + tool_result
 第 3 次请求：前面全部内容 + 新的 tool_call + tool_result
 ```
 
-KV Cache 可以加速一次请求内部逐 Token 的 Decode，但它不一定消除多次 HTTP 请求之间的重复 Prefill。这也是为什么成熟 Agent 还要继续考虑：
+KV Cache 只能加速单次请求内部的逐字 Decode，消除不了多轮请求间的巨量 Prefill。回头看我们前面亲手写过的几道防线，其实都是在呼应这层底层约束：
 
-- Prompt Cache：复用多个请求共有的前缀。
-- 上下文压缩：减少真正需要送入模型的历史内容。
-- 工具结果裁剪：避免几万行日志占满上下文。
-- KV Cache 管理：在延迟、吞吐量和显存之间取平衡。
+- **`s10` 固定前缀与缓存 System Prompt**：把变动频繁的动态状态和稳定的系统指令分层，尽量保住跨请求的公共前缀，提高 Prompt Cache 命中率。
+- **`s08` 四层上下文压缩与超大结果落盘**：先裁剪旧工具结果、再按预算把几万行日志写盘只留预览，实在逼近上限再摘要压缩，避免无用历史拖垮 Prefill 延迟与 Token 成本。
+- **`s06` Subagent 上下文隔离**：把探索型子任务放进独立上下文，干完只带回一段简洁总结，不让主循环的 `messages` 被中间试错塞满。
 
-到 `s08` 学习上下文压缩时，你会再次遇到同一个问题：历史信息当然有价值，但并不是保存得越多、每次全部重算就越好。
+写应用层 Agent 代码时懂一点推理底层，你才知道为什么“把所有东西全塞进上下文”从来不是好方案。
 
 #### 继续阅读
 
 - Transformer 与 Self-Attention 的起点：[Attention Is All You Need](https://arxiv.org/abs/1706.03762)
 - KV Cache 的直观实现与缓存策略：[Hugging Face Cache strategies](https://huggingface.co/docs/transformers/kv_cache)
-- 生产级 KV Cache 内存管理：[Efficient Memory Management for Large Language Model Serving with PagedAttention](https://arxiv.org/abs/2309.06180)
+- 生产级 KV Cache 显存管理：[Efficient Memory Management for Large Language Model Serving with PagedAttention](https://arxiv.org/abs/2309.06180)
 
 ### 后续扩展阅读清单
 
-下面只先记录方向，不在这里展开实现细节。
+主线 18 步已经搭起 Code Agent 的核心骨架。如果你想往生产级 Runtime 继续深挖，可以按下面 10 个专题逐个突破：
 
 #### 1. 模型推理与性能
 
-- Tokenizer 如何把文本切成 Token。
-- Context Window 为什么有长度上限。
-- Prompt Cache、Prefix Cache 与 KV Cache 的区别。
-- Continuous Batching 如何提高并发吞吐量。
-- Speculative Decoding 如何加快生成速度。
-- 量化、GQA、MQA 如何减少显存占用。
+- Tokenizer 如何把文本和代码切成 Token。
+- Context Window 的长度上限从何而来，长上下文为什么会“注意力稀释”。
+- Prompt Cache、Prefix Cache 与 KV Cache 的配合关系。
+- Continuous Batching 如何提升并发吞吐量。
+- Speculative Decoding 如何加快解码速度。
+- 量化、GQA、MQA 如何压缩显存占用。
 
 #### 2. Prompt 与 Context Engineering
 
-- System Prompt 应该如何分层组装。
-- 长工具结果应该裁剪、总结还是写入文件。
-- RAG、Memory 和当前上下文分别解决什么问题。
-- Prompt Injection 为什么会影响工具安全。
-- 如何计算和控制一次 Agent Loop 的 Token 成本。
+- System Prompt 应该如何分层组装以兼顾缓存命中和动态上下文。
+- 超长工具输出应该裁剪、摘要还是落盘后按需读取。
+- RAG、持久化 Memory 和当前上下文分别解决什么问题。
+- Prompt Injection 为什么会击穿工具安全边界。
+- 如何估算并控制一次长 Agent Loop 的 Token 成本。
 
 #### 3. 代码库理解
 
-- `rg`、Glob 和文件读取适合解决什么问题。
-- AST 与 Tree-sitter 如何理解代码结构。
-- LSP 如何提供定义跳转、引用查找和类型信息。
-- Repository Map 如何压缩大型项目结构。
-- Embedding 检索什么时候比关键词搜索更合适。
+- `rg`、Glob 和按行读取分别适合什么检索场景。
+- AST 与 Tree-sitter 如何提供结构化代码感知。
+- LSP 如何提供定义跳转、引用查找和精确类型诊断。
+- Repository Map 如何压缩大型仓库的骨架信息。
+- 什么时候关键词搜索够用，什么时候值得引入 Embedding 检索。
 
 #### 4. Agent 推理与规划
 
-- ReAct、Plan-and-Execute 和普通 Tool Loop 的区别。
-- Todo 与持久 Task Graph 应该如何分工。
-- Reflection 和 Critic Agent 是否真的能提高成功率。
-- 如何根据任务难度选择不同模型。
-- Agent 如何判断任务已经真正完成。
+- ReAct、Plan-and-Execute 和普通 Tool Loop 的边界与取舍。
+- 内存 Todo 与持久化 Task Graph 应该如何协同分工。
+- Reflection 与 Critic Agent 什么时候真能提升成功率，什么时候只是徒增延迟。
+- 如何按子任务难度动态路由不同强度的模型。
+- Agent 如何用可验证信号（测试、类型检查）判断任务真正完成。
 
 #### 5. Agent Runtime
 
-- Event Loop、消息队列和状态机如何组织长期任务。
-- Checkpoint 如何支持中断、恢复和重试。
-- Background Task 如何处理并发与完成通知。
-- Backpressure 如何避免后台任务无限堆积。
-- Durable Execution 如何让进程崩溃后继续工作。
+- Event Loop、消息队列与状态机如何组织长生命周期任务。
+- Checkpoint 如何支撑中断、断点续跑与幂等重试。
+- Background Task 如何处理并发控制与完成通知。
+- Backpressure 如何防止后台任务和消息无限堆积。
+- Durable Execution 如何在进程崩溃重启后无缝恢复进度。
 
 #### 6. 工具安全与执行隔离
 
-- Bash Sandbox、容器和虚拟机的隔离边界。
-- Allow、Ask、Deny 权限策略如何落地。
-- API Token 和环境变量如何避免泄漏。
-- 工具调用如何保证幂等性与可重试。
-- 审计日志应该记录哪些执行信息。
+- Bash Sandbox、容器和微型虚拟机各自的隔离边界与启动开销。
+- Allow / Ask / Deny 权限策略如何在规则与体验间平衡。
+- API Token 与环境变量如何避免泄漏进模型上下文和日志。
+- 工具调用如何设计幂等性与安全重试。
+- 审计日志应该沉淀哪些字段才能事后追责与复盘。
 
 #### 7. 多 Agent 协作
 
-- Subagent、Teammate 和独立进程的区别。
-- Agent 身份、角色与任务能力如何匹配。
-- 消息协议如何处理请求、响应、超时和取消。
-- 多个 Agent 如何避免重复认领同一任务。
-- Git Worktree 如何隔离代码修改与合并冲突。
+- Subagent、Teammate 与独立外部进程分别适合什么规模的任务。
+- Agent 身份、角色、工具范围与任务能力如何匹配。
+- 结构化协议如何处理请求、响应、超时、重放与取消。
+- 多个 Agent 并发抢单时如何用原子锁或 lease 避免重复认领（可延伸阅读仓库里的 `s16-read-autonomous-agents.md`）。
+- Git Worktree 如何隔离并行代码改动并降低合并冲突。
 
 #### 8. MCP 与插件生态
 
-- MCP Client、Server 和 Transport 的完整生命周期。
-- Tools、Resources 与 Prompts 三种能力的区别。
-- MCP 服务如何做鉴权、发现和能力协商。
-- 原生工具、MCP 工具和插件如何进入同一调度层。
-- 第三方插件发生故障时如何隔离和降级。
+- MCP Client、Server 与 Transport（stdio / Streamable HTTP）的完整生命周期。
+- Tools、Resources 与 Prompts 三种原语的适用场景。
+- MCP 服务如何做 OAuth 鉴权、动态发现与 `list_changed` 能力协商。
+- 内置工具、MCP 工具与本地插件如何进入同一调度与权限控制面。
+- 第三方插件超时、报错或不可信时如何隔离与优雅降级。
 
 #### 9. 可观测性与评测
 
-- TTFT、TPS、Token 用量和工具成功率分别代表什么。
-- Trace 如何串起一次完整 Agent Loop。
-- 如何建立可重复运行的 Agent Eval 数据集。
-- 如何区分模型错误、工具错误和运行时错误。
-- 成本、延迟和任务成功率如何一起评估。
+- TTFT、TPS、Token 用量与工具调用成功率各自衡量什么。
+- Trace 如何把模型请求、工具执行与状态变迁串成完整调用链。
+- 如何构建可复现、防过拟合的 Agent Eval 数据集。
+- 如何拆分模型判断错误、工具实现错误与运行时环境错误。
+- 成本、延迟与任务完成率如何放在同一坐标系里评估。
 
 #### 10. 人机协作体验
 
-- Streaming 如何让用户看到实时进度。
-- Approval UI 如何展示危险操作与修改 diff。
-- 用户如何中断、补充信息并恢复任务。
-- Agent 如何解释计划、进度和失败原因。
-- 如何让终端、编辑器和 Web UI 共享同一运行状态。
+- Streaming 如何让用户实时看见思考与工具进度。
+- Approval UI 如何清晰展示高危命令和代码修改 diff。
+- 用户如何随时打断、补充约束并接续未完任务。
+- Agent 如何透明地解释当前计划、进度和失败根因。
+- 如何让终端、IDE 编辑器和 Web UI 共享同一份持久运行状态。
+
+> **收官思考题**：回头看从 `s00` 到 `s17` 这条演进线，如果现在要让你把这套教学版 Agent 真正推到团队日常开发里用，你最先会补哪三块生产能力（例如 OS 级沙箱、持久化事件日志、并发任务锁或真实 MCP 传输层），为什么排这个优先级？
 
 ```js ! agent.js
 !from ../../code-agent-course/s17-mcp-plugin.js
