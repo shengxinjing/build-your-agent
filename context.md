@@ -2,7 +2,7 @@
 
 给接手本项目的工具 / Agent 读：这里记录**当前目标、已完成进度、生成器抽取机制与下一步待办**。项目长期规则、命令、代码与文章约定请先读 `AGENTS.md`（`CLAUDE.md` 是指向 `AGENTS.md` 的软链接，只改 `AGENTS.md`）。
 
-最后更新：2026-11-24，当前分支 `main`，全套 21/21 篇课程文稿（`intro.md`、`s00`–`s18`、`s16-read-autonomous-agents.md`）已完成精简定版、双轴 Code Review 复核与 MDX 重新生成（`pnpm run check:secrets`、`pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build` 全部通过）。
+最后更新：2026-11-26，当前分支 `main`。第一季全套 21/21 篇文稿（`intro.md`、`s00`–`s18`、`s16-read-autonomous-agents.md`）与科技感 UI/章节导航升级（`28085c2`）均已上线；三季总路线图（`code-agent-course/ROADMAP.md`）已定稿，第二季 5 个独立生产化专题 Lab（`p00`–`p05`）已完成源码、离线单测与文档打磨（暂未拆帧及接入静态生成器）。
 
 ## 项目是什么
 
@@ -79,22 +79,17 @@
 
 ---
 
-## 后续可选演进方向
+## 三季演进路线与当前待办
 
-1. **视觉验收微调（按需）**
-   - 本地预览 `http://localhost:3000/cn/build-your-agent` 时，如对个别 Mermaid 图布局、字号或移动端排版有新想法，直接修改源 `.md` 或样式后重新生成即可。
+完整课程蓝图见 `code-agent-course/ROADMAP.md`，按三级跃迁分为三季：
 
-2. **未来内容扩展（可选）**
-   - 将 `s18.md` 中列出的进阶主题（如 Prompt Cache、Sandbox、Eval、Worktree 等）按需逐篇展开；或把 `s16-read-autonomous-agents.md` 的设计草图实现为可运行章节与单测。
-
-3. **分批润色全套课程文稿（已完成，21/21 篇）**
-   - 第一批：`intro.md`、`s00`–`s06`（已合并至 `main`，PR #2）；
-   - 第二批：`s07`–`s11`（已提交至 `main`，`d9c486f`）；
-   - 第三批：`s12`–`s17`、`s18.md`、`s16-read-autonomous-agents.md`（已完成定版与双轴 Review 修正并收官）。
-
-3. **`s14`–`s17` 的 `loadTask` 空值检查修复（已完成）**
-   - 已在 `s14-cron-scheduler.js` 至 `s17-mcp-plugin.js` 补回 `if (!existsSync(taskPath(id))) return null;` 及 `canStart` / `claimTask` / `completeTask` / `runGetTask` 的安全空值判断，同步移除 `s14-cron-scheduler.md` 第 1 帧中删掉该检查的旧补丁，并在 `s14-cron-scheduler.test.js` 补充不存在任务 ID 的回归单测。
-
+1. **第一季：Code Agent 从 0 到 1（`s00`–`s18`，已完成并上线）**
+   - 21/21 篇文稿定稿 + 128 帧演进 + 科技感暗/亮双色 UI 与章节导航（`28085c2`）。逻辑上按 4 幕组织：`s00`–`s05` 最小闭环、`s06`–`s11` 长程续航、`s12`–`s17` 异步与多 Agent、`s18` 底层视野。
+2. **第二季：Production Lab（`p01`–`p05`，当前打磨阶段）**
+   - 总览见 `code-agent-course/p00-production-labs.md`，5 个独立最小基座 Lab（流式打断、编辑诊断与回滚、JSONL 会话事件日志、真实 MCP stdio、微型 Eval 与熔断）已完成功能打磨、边界加固与离线单测（同步扩展了 `fake-llm.js` 的 `__sse` / `__usage` 能力）。
+   - 下一步：用户验收功能与口吻满意后，再按章节拆 `diff agent-step` 演进帧并接入网站第二季入口（可选扩展 `p06` OS 沙箱隔离）。
+3. **第三季：Personal AI Lab（`a01`–`a04`，路线已定，待开工）**
+   - 复用前两季 Code Agent 内核，以 4 个独立专题补齐个人助理增量积木：`a01` 消息网关（Channel Gateway）、`a02` 心跳巡检与记忆整理、`a03` 浏览器触手（Browser Use）、`a04` 个人助理安全防线（防间接 Prompt Injection）。
 4. **本地演示密钥管理与防泄漏机制（已完成）**
    - `code-agent-course/helper.js` 默认从 `process.env` 或 gitignored 的 `code-agent-course/.env.local` 读取 `LLM_PROVIDER` / `LLM_API_TOKEN`（及可选 `LLM_MODEL` / `LLM_BASE_URL`），模板见 `code-agent-course/.env.local.example`；生成器 `renderSafeHelper()` 剥离 `@local-env` 区块以保持网页版代码面板干净。
    - 新增 `scripts/check-secrets.mjs`（`pnpm run check:secrets`）、`scripts/check-secrets.test.mjs` 与本地 `.git/hooks/pre-commit`，提交前拦截 `.env*`、`helper.js` 硬编码 token 及真实密钥串。

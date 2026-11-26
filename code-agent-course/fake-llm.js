@@ -26,8 +26,37 @@ export async function withFakeLlm(replies, fn) {
         res.end(JSON.stringify({ error: rest }));
         return;
       }
+      // 测试可塞一个 { __sse: [...chunks], __delayMs } 来模拟 OpenAI SSE 流式响应。
+      // A reply with __sse makes the server stream Server-Sent Events chunks (optional delay per chunk).
+      if (reply && Array.isArray(reply.__sse)) {
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        const delayMs = reply.__delayMs || 0;
+        let closed = false;
+        res.on("close", () => {
+          closed = true;
+        });
+        (async () => {
+          for (const chunk of reply.__sse) {
+            if (closed || res.destroyed || res.writableEnded) return;
+            if (delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              if (closed || res.destroyed || res.writableEnded) return;
+            }
+            const payload = typeof chunk === "string" ? chunk : `data: ${JSON.stringify(chunk)}\n\n`;
+            res.write(payload);
+          }
+          if (!closed && !res.destroyed && !res.writableEnded) res.end();
+        })();
+        return;
+      }
+      const { __usage, ...choice } = reply || {};
+      const payload = __usage ? { choices: [choice], usage: __usage } : { choices: [reply] };
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ choices: [reply] }));
+      res.end(JSON.stringify(payload));
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -48,6 +77,7 @@ export async function withFakeLlm(replies, fn) {
     for (const name of Object.keys(saved)) {
       Object.assign(llmProviderConfigs[name], saved[name]);
     }
+    server.closeAllConnections?.();
     server.close();
   }
 }
