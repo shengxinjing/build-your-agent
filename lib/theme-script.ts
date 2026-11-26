@@ -5,10 +5,8 @@ export function getThemeScript() {
     (function() {
       try {
         var stored = window.localStorage.getItem("${STORAGE_KEY}");
-        var source = stored === "light" || stored === "dark" ? "user" : "system";
-        var theme = stored === "light" || stored === "dark"
-          ? stored
-          : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        var source = stored === "light" || stored === "dark" ? "user" : "default";
+        var theme = stored === "light" || stored === "dark" ? stored : "dark";
         var root = document.documentElement;
         root.dataset.theme = theme;
         root.dataset.themeSource = source;

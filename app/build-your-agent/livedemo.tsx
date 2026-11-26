@@ -31,12 +31,13 @@ import {
   getEditorLanguage,
   getExtension,
 } from "@/lib/tutorial-files"
+import { loadStepRuntimeCode } from "@/lib/tutorial-runtime-client"
 
 const IdeEditor = dynamic(
   () => import("./ide-editor").then((module) => module.IdeEditor),
   {
     loading: () => (
-      <div className="live-demo-panel flex h-full items-center justify-center rounded-[22px] text-xs">
+      <div className="live-demo-panel flex h-full items-center justify-center rounded-[10px] text-xs">
         Loading editor...
       </div>
     ),
@@ -70,46 +71,6 @@ type DemoFile = {
   lang: string
   meta: string
   needsRuntimeFetch?: boolean
-}
-
-const runtimeCodeCache = new Map<number, Promise<string>>()
-
-async function loadStepRuntimeCode(stepIndex: number) {
-  const cached = runtimeCodeCache.get(stepIndex)
-
-  if (cached) {
-    return cached
-  }
-
-  const request = fetch(
-    `/api/build-your-agent/runtime/${stepIndex}`,
-  )
-    .then(async (response) => {
-      if (!response.ok) {
-        throw new Error(
-          `Failed to load runtime code for step ${stepIndex} (${response.status})`,
-        )
-      }
-
-      const payload = (await response.json()) as {
-        code?: unknown
-      }
-
-      if (typeof payload.code !== "string") {
-        throw new Error(
-          `Invalid runtime payload for step ${stepIndex}`,
-        )
-      }
-
-      return payload.code
-    })
-    .catch((error) => {
-      runtimeCodeCache.delete(stepIndex)
-      throw error
-    })
-
-  runtimeCodeCache.set(stepIndex, request)
-  return request
 }
 
 type Status =
@@ -362,7 +323,7 @@ export function LiveDemo({
       convertEol: true,
       cursorBlink: true,
       fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+        'var(--font-mono), "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       fontSize: 12,
       lineHeight: 1.35,
       overviewRuler: {
@@ -771,10 +732,11 @@ export function LiveDemo({
       <button
         type="button"
         onClick={openWorkspace}
-        className="scrolly-icon-button"
+        className="scrolly-run-button"
         aria-label={`Open ${activeFileName} in WebContainer terminal`}
       >
-        <Play size={14} />
+        <Play size={12} />
+        <span>{locale === "cn" ? "运行" : "Run"}</span>
       </button>
 
       {open && workspace && typeof document !== "undefined"
@@ -784,7 +746,7 @@ export function LiveDemo({
             role="dialog"
             aria-modal="true"
           >
-          <div className="live-demo-shell mx-auto flex h-full max-w-[118rem] flex-col overflow-hidden rounded-[28px] p-4 sm:p-5">
+          <div className="live-demo-shell mx-auto flex h-full max-w-[118rem] flex-col overflow-hidden rounded-[14px] p-4 sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5">
               <div className="min-w-0">
                 <div className="text-[13px] font-semibold live-demo-heading">
@@ -855,7 +817,7 @@ export function LiveDemo({
                         value={editorValue}
                       />
                     ) : (
-                      <div className="live-demo-panel flex h-full items-center justify-center rounded-[22px] text-xs">
+                      <div className="live-demo-panel flex h-full items-center justify-center rounded-[10px] text-xs">
                         Loading editor...
                       </div>
                     )}
@@ -873,15 +835,15 @@ export function LiveDemo({
                     {copy.terminalHintSuffix}
                   </div>
                   {error ? (
-                    <p className="mt-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200">
+                    <p className="mt-2 rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200">
                       {error}
                     </p>
                   ) : null}
                 </div>
 
                 <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-3 overflow-hidden">
-                  <div className="live-demo-panel min-h-0 min-w-0 rounded-[22px] p-3 shadow-[0_30px_80px_rgba(148,163,184,0.15)]">
-                    <div className="live-demo-terminal-shell h-full min-h-[16rem] w-full min-w-0 overflow-hidden rounded-[16px] lg:min-h-[18rem]">
+                  <div className="live-demo-panel min-h-0 min-w-0 rounded-[10px] p-3 shadow-[0_30px_80px_rgba(15,23,42,0.12)]">
+                    <div className="live-demo-terminal-shell h-full min-h-[16rem] w-full min-w-0 overflow-hidden rounded-[8px] lg:min-h-[18rem]">
                       <div
                         ref={terminalHostRef}
                         className="live-demo-terminal h-full w-full min-h-0 min-w-0 cursor-text"
@@ -962,7 +924,7 @@ function StatusBadge({
 
   const className = isDark
     ? {
-      idle: "border-white/12 bg-white/6 text-[#d7d1cb]",
+      idle: "border-white/12 bg-white/6 text-[#e2e8f0]",
       booting: "border-amber-500/30 bg-amber-500/12 text-amber-200",
       syncing: "border-sky-500/30 bg-sky-500/12 text-sky-200",
       starting: "border-sky-500/30 bg-sky-500/12 text-sky-200",
@@ -997,7 +959,7 @@ function FileTree({
   onSelect: (fileName: string) => void
 }) {
   return (
-    <div className="live-demo-file-tree shrink-0 overflow-y-auto rounded-[18px] py-2.5">
+    <div className="live-demo-file-tree shrink-0 overflow-y-auto rounded-[10px] py-2.5">
       <div className="live-demo-file-tree__header px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em]">
         Files
       </div>
@@ -1071,7 +1033,7 @@ function QuickActionCard({
     <button
       type="button"
       onClick={onClick}
-      className="live-demo-command-card min-w-0 rounded-[16px] px-3.5 py-2.5 text-left transition hover:-translate-y-0.5"
+      className="live-demo-command-card min-w-0 rounded-[10px] px-3.5 py-2.5 text-left transition hover:-translate-y-0.5"
     >
       <div className="live-demo-command-card__label text-xs font-semibold">
         {label}
@@ -1089,20 +1051,20 @@ function QuickActionCard({
 function getTerminalTheme(theme: "light" | "dark") {
   if (theme === "dark") {
     return {
-      background: "#151413",
-      black: "#151413",
-      blue: "#7aa2f7",
-      brightBlack: "#6b7280",
+      background: "#0b101b",
+      black: "#0b101b",
+      blue: "#60a5fa",
+      brightBlack: "#64748b",
       brightBlue: "#93c5fd",
-      brightCyan: "#67e8f9",
+      brightCyan: "#7dd3fc",
       brightGreen: "#6ee7b7",
       brightMagenta: "#f0abfc",
       brightRed: "#fca5a5",
-      brightWhite: "#eee6dd",
+      brightWhite: "#f8fafc",
       brightYellow: "#fde68a",
-      cursor: "#d68f6f",
-      cyan: "#22d3ee",
-      foreground: "#d8cfc6",
+      cursor: "#38bdf8",
+      cyan: "#38bdf8",
+      foreground: "#e2e8f0",
       green: "#34d399",
       magenta: "#e879f9",
       red: "#f87171",
@@ -1113,29 +1075,29 @@ function getTerminalTheme(theme: "light" | "dark") {
         "rgba(148, 163, 184, 0.16)",
       scrollbarSliderHoverBackground:
         "rgba(148, 163, 184, 0.22)",
-      selectionBackground: "rgba(122, 162, 247, 0.26)",
-      white: "#d8cfc6",
-      yellow: "#f59e0b",
+      selectionBackground: "rgba(56, 189, 248, 0.25)",
+      white: "#e2e8f0",
+      yellow: "#fbbf24",
     }
   }
 
   return {
-    background: "#fbf8f3",
-    black: "#2d2925",
+    background: "#f8fafc",
+    black: "#0f172a",
     blue: "#2563eb",
     brightBlack: "#64748b",
-    brightBlue: "#2563eb",
+    brightBlue: "#3b82f6",
     brightCyan: "#0ea5e9",
-    brightGreen: "#16a34a",
-    brightMagenta: "#d946ef",
-    brightRed: "#ef4444",
-    brightWhite: "#2d2925",
+    brightGreen: "#059669",
+    brightMagenta: "#c026d3",
+    brightRed: "#dc2626",
+    brightWhite: "#0f172a",
     brightYellow: "#ca8a04",
-    cursor: "#9a5133",
-    cyan: "#0891b2",
-    foreground: "#37312c",
-    green: "#16a34a",
-    magenta: "#d946ef",
+    cursor: "#2563eb",
+    cyan: "#0284c7",
+    foreground: "#0f172a",
+    green: "#059669",
+    magenta: "#c026d3",
     red: "#dc2626",
     overviewRulerBorder: "transparent",
     scrollbarSliderActiveBackground:
@@ -1145,7 +1107,7 @@ function getTerminalTheme(theme: "light" | "dark") {
     scrollbarSliderHoverBackground:
       "rgba(148, 163, 184, 0.22)",
     selectionBackground: "#dbeafe",
-    white: "#37312c",
+    white: "#0f172a",
     yellow: "#ca8a04",
   }
 }

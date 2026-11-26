@@ -34,12 +34,16 @@ export function SiteHeader({
         <Image
           src={site.logoSrc}
           alt={site.author}
-          width={52}
-          height={52}
+          width={44}
+          height={44}
           className="site-header__logo"
           priority
           fetchPriority="high"
         />
+        <span className="site-header__brand">
+          <span className="site-header__brand-title">Build Your Agent</span>
+          <span className="site-header__brand-tag">SYSTEMS LAB</span>
+        </span>
       </Link>
 
       <div className="site-header__actions">

@@ -4,6 +4,7 @@ import { Block, CodeBlock, parseRoot } from "codehike/blocks"
 import type { MDXProps } from "mdx/types.js"
 import type { ReactElement } from "react"
 import path from "node:path"
+import { ArrowDownRight } from "lucide-react"
 import { z } from "zod"
 import {
   highlight,
@@ -14,12 +15,14 @@ import {
   Selectable,
   SelectionProvider,
 } from "codehike/utils/selection"
+import { ChapterNav } from "./chapter-nav"
 import { CodeStage } from "./code-stage"
 import { ImageLightbox } from "./image-lightbox"
 import { LlmSettingsPanel } from "./llm-settings-panel"
 import { SiteHeader } from "@/components/site-header"
 import { HomeHero } from "@/components/hero"
 import type { Locale } from "@/lib/i18n"
+import { buildChapterIndex } from "@/lib/tutorial-chapters"
 import {
   parseCodeMeta,
   sliceCodeByRange,
@@ -49,6 +52,9 @@ export async function BuildYourAgentArticlePage({
   locale: Locale
 }) {
   const { intro, steps, outro } = parseRoot(content, Schema)
+  const { chapters, stepMeta } = buildChapterIndex(
+    steps.map((step) => step.title),
+  )
   const sharedFiles = await loadSharedCodeFiles(
     buildYourAgentSharedFiles,
     ARTICLE_DIR,
@@ -76,36 +82,63 @@ export async function BuildYourAgentArticlePage({
       <SiteHeader locale={locale} pathname="/build-your-agent" />
 
       <div className="scrolly-hero">
+        <div className="scrolly-hero__eyebrow">
+          <span className="scrolly-hero__pulse" aria-hidden="true" />
+          <span>
+            {`SYSTEMS LAB · ${chapters.length} CHAPTERS · ${steps.length} STEPS · PURE JS`}
+          </span>
+        </div>
         <h1 className="article-title">{intro.title}</h1>
         <div className="journal-prose article-summary">
           {intro.children}
         </div>
-        <LlmSettingsPanel locale={locale} />
-      </div>
-      <SelectionProvider className="scrolly-grid">
-        <div className="scrolly-copy journal-prose">
-          {steps.map((step, index) => (
-            <Selectable
-              key={index}
-              index={index}
-              selectOn={["click", "scroll"]}
-              className={`scrolly-step${
-                step.title ? " scrolly-step--chapter" : ""
-              }`}
-            >
-              {step.title ? <h2>{step.title}</h2> : null}
-              <div>{step.children}</div>
-            </Selectable>
-          ))}
+        <div className="scrolly-hero__actions">
+          <a
+            href={`#${chapters[0]?.id ?? "s00"}`}
+            className="scrolly-hero__cta"
+          >
+            <span>{locale === "cn" ? "从 S00 开始" : "Start S00"}</span>
+            <ArrowDownRight size={15} />
+          </a>
+          <div className="min-w-0 flex-1">
+            <LlmSettingsPanel locale={locale} />
+          </div>
         </div>
-        <div className="scrolly-stage">
-          <div className="scrolly-stage__stick">
-            <div className="scrolly-stage__frame">
-              <CodeStage
-                locale={locale}
-                sharedFiles={preparedSharedFiles}
-                steps={stageSteps}
-              />
+      </div>
+
+      <SelectionProvider>
+        <ChapterNav
+          chapters={chapters}
+          locale={locale}
+          totalSteps={steps.length}
+        />
+        <div className="scrolly-grid">
+          <div className="scrolly-copy journal-prose">
+            {steps.map((step, index) => (
+              <Selectable
+                key={index}
+                id={step.title ? stepMeta[index]?.chapterId : undefined}
+                index={index}
+                selectOn={["click", "scroll"]}
+                className={`scrolly-step${
+                  step.title ? " scrolly-step--chapter" : ""
+                }`}
+              >
+                {step.title ? <h2>{step.title}</h2> : null}
+                <div>{step.children}</div>
+              </Selectable>
+            ))}
+          </div>
+          <div className="scrolly-stage">
+            <div className="scrolly-stage__stick">
+              <div className="scrolly-stage__frame">
+                <CodeStage
+                  locale={locale}
+                  sharedFiles={preparedSharedFiles}
+                  stepMeta={stepMeta}
+                  steps={stageSteps}
+                />
+              </div>
             </div>
           </div>
         </div>

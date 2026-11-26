@@ -3,7 +3,7 @@
 import type { HighlightedCode } from "codehike/code"
 import type { ReactNode } from "react"
 import { useEffect, useMemo, useState } from "react"
-import { Code2, X } from "lucide-react"
+import { Code2, Crosshair, FileCode2, X } from "lucide-react"
 import { useSelectedIndex } from "codehike/utils/selection"
 import { tokenTransitions } from "../components/annotations/token-transitions"
 import { ThemedPre } from "../components/themed-pre"
@@ -12,8 +12,10 @@ import { focus } from "./focus"
 import { LiveDemo } from "./livedemo"
 import { useLlmSettings } from "./use-llm-settings"
 import type { Locale } from "@/lib/i18n"
+import type { StepMeta } from "@/lib/tutorial-chapters"
 import { extractHighlightedCodeText } from "@/lib/tutorial-files"
 import { injectLlmSettingsIntoHelper } from "@/lib/build-your-agent-llm"
+import { loadStepRuntimeCode } from "@/lib/tutorial-runtime-client"
 
 type CodeStageFile = {
   copyText?: string
@@ -36,10 +38,12 @@ const codeHandlers = [
 export function CodeStage({
   locale,
   sharedFiles,
+  stepMeta,
   steps,
 }: {
   locale: Locale
   sharedFiles: CodeStageFile[]
+  stepMeta?: StepMeta[]
   steps: CodeStageStep[]
 }) {
   const [selectedIndex] = useSelectedIndex()
@@ -70,6 +74,7 @@ export function CodeStage({
     [apiToken, llmProvider, sharedFiles],
   )
   const currentStep = steps[selectedIndex] || steps[0]
+  const currentMeta = stepMeta?.[selectedIndex] || stepMeta?.[0]
   const files = useMemo(
     () =>
       currentStep
@@ -92,19 +97,83 @@ export function CodeStage({
   // Only the chapter file has highlighted tokens; helper.js uses the light local highlighter.
   const highlightedCode =
     activeIndex === 0 ? currentStep?.highlightedCode ?? null : null
-  const activeCopyText =
-    activeFile?.copyText ?? extractHighlightedCodeText(highlightedCode)
-  const activeRender = highlightedCode
-    ? (
-      <ThemedPre
-        code={highlightedCode}
-        handlers={codeHandlers}
-        className="h-full bg-transparent"
-      />
-    )
-    : activeFile
-      ? <DynamicCodeBlock code={activeCopyText} />
+  const canToggleFull = activeIndex === 0 && highlightedCode !== null
+
+  const [fullMode, setFullMode] = useState(false)
+  const [fullCodeState, setFullCodeState] = useState<{
+    stepIndex: number
+    code: string
+  } | null>(null)
+  const [fullCodeError, setFullCodeError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setFullMode(false)
+    setFullCodeError(null)
+  }, [selectedIndex, activeFileName])
+
+  useEffect(() => {
+    if (!fullMode || !canToggleFull) {
+      return
+    }
+
+    if (fullCodeState?.stepIndex === selectedIndex) {
+      return
+    }
+
+    let cancelled = false
+    setFullCodeError(null)
+
+    void loadStepRuntimeCode(selectedIndex)
+      .then((code) => {
+        if (!cancelled) {
+          setFullCodeState({ stepIndex: selectedIndex, code })
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFullCodeError(
+            locale === "cn"
+              ? "完整源码加载失败，已保留聚焦片段。"
+              : "Failed to load full source.",
+          )
+          setFullMode(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [canToggleFull, fullCodeState?.stepIndex, fullMode, locale, selectedIndex])
+
+  const isFullView = fullMode && canToggleFull
+  const loadedFullCode =
+    isFullView && fullCodeState?.stepIndex === selectedIndex
+      ? fullCodeState.code
       : null
+
+  const focusedCopyText =
+    activeFile?.copyText ?? extractHighlightedCodeText(highlightedCode)
+  const activeCopyText = loadedFullCode ?? focusedCopyText
+
+  const activeRender = isFullView
+    ? loadedFullCode !== null
+      ? <DynamicCodeBlock code={loadedFullCode} />
+      : (
+        <div className="flex h-full min-h-[12rem] items-center justify-center font-mono text-xs text-[var(--muted)]">
+          {locale === "cn" ? "正在加载完整源码..." : "Loading full source..."}
+        </div>
+      )
+    : highlightedCode
+      ? (
+        <ThemedPre
+          code={highlightedCode}
+          handlers={codeHandlers}
+          className="h-full bg-transparent"
+        />
+      )
+      : activeFile
+        ? <DynamicCodeBlock code={focusedCopyText} />
+        : null
 
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -135,6 +204,9 @@ export function CodeStage({
 
   const mobileLabel = locale === "cn" ? "查看代码" : "View code"
   const closeLabel = locale === "cn" ? "关闭代码" : "Close code"
+  const stepBadge = currentMeta
+    ? `${currentMeta.chapterCode} · ${String(currentMeta.frameInChapter).padStart(2, "0")}/${String(currentMeta.chapterStepCount).padStart(2, "0")}`
+    : null
 
   return (
     <div className="scrolly-stage-ui">
@@ -201,10 +273,42 @@ export function CodeStage({
 
           <div className="scrolly-code">
             <div className="scrolly-code__toolbar">
-              <div className="scrolly-code__meta">
-                {activeFile.fileName}
+              <div className="scrolly-code__meta-group">
+                <span className="scrolly-code__dots" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                {stepBadge ? (
+                  <span className="scrolly-code__pill">{stepBadge}</span>
+                ) : null}
+                <span className="scrolly-code__meta">
+                  {activeFile.fileName}
+                </span>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 items-center gap-1.5">
+                {canToggleFull ? (
+                  <button
+                    type="button"
+                    onClick={() => setFullMode((current) => !current)}
+                    aria-pressed={isFullView}
+                    className={`scrolly-code__mode-btn${
+                      isFullView ? " scrolly-code__mode-btn--active" : ""
+                    }`}
+                  >
+                    {isFullView ? (
+                      <>
+                        <Crosshair size={12} />
+                        <span>{locale === "cn" ? "聚焦片段" : "Focus"}</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileCode2 size={12} />
+                        <span>{locale === "cn" ? "完整源码" : "Full"}</span>
+                      </>
+                    )}
+                  </button>
+                ) : null}
                 <LiveDemo
                   activeFileName={activeFile.fileName}
                   entryFileName={currentStep.file.fileName}
@@ -221,8 +325,13 @@ export function CodeStage({
                 <CopyButton text={activeCopyText} />
               </div>
             </div>
+            {fullCodeError ? (
+              <div className="border-b border-[var(--code-line)] bg-[var(--surface-elevated)] px-3 py-1.5 text-[11px] text-[var(--muted)]">
+                {fullCodeError}
+              </div>
+            ) : null}
             <div
-              key={activeFile.fileName}
+              key={`${activeFile.fileName}-${isFullView ? "full" : "focus"}`}
               role="tabpanel"
               aria-label={activeFile.fileName}
               className="scrolly-stage__scroll"
@@ -242,7 +351,7 @@ function DynamicCodeBlock({
   code: string
 }) {
   return (
-    <pre className="bg-transparent px-4 py-3 text-[12px] leading-[19px] text-[var(--text)]">
+    <pre className="scrolly-code__dynamic-pre bg-transparent text-[12px] leading-[19px] text-[var(--text)]">
       <code>{highlightJavaScript(code)}</code>
     </pre>
   )

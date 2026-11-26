@@ -3,7 +3,7 @@
 import React from "react"
 
 export type ThemeMode = "light" | "dark"
-type ThemeSource = "system" | "user"
+type ThemeSource = "default" | "user"
 
 type ThemeContextValue = {
   resolvedTheme: ThemeMode
@@ -14,6 +14,7 @@ type ThemeContextValue = {
 const ThemeContext =
   React.createContext<ThemeContextValue | null>(null)
 const STORAGE_KEY = "build-your-agent-theme"
+const DEFAULT_THEME: ThemeMode = "dark"
 
 function readStoredTheme(): ThemeMode | null {
   if (typeof window === "undefined") {
@@ -47,35 +48,6 @@ function readThemeFromDom(): ThemeMode | null {
   return null
 }
 
-function readThemeSourceFromDom(): ThemeSource | null {
-  if (typeof document === "undefined") {
-    return null
-  }
-
-  const source = document.documentElement.dataset.themeSource
-
-  if (source === "system" || source === "user") {
-    return source
-  }
-
-  return null
-}
-
-function readSystemTheme(): ThemeMode {
-  if (typeof window === "undefined") {
-    return "light"
-  }
-
-  return window.matchMedia("(prefers-color-scheme: dark)")
-    .matches
-    ? "dark"
-    : "light"
-}
-
-function resolveTheme(): ThemeMode {
-  return readStoredTheme() ?? readSystemTheme()
-}
-
 function applyTheme(
   theme: ThemeMode,
   source: ThemeSource,
@@ -93,41 +65,31 @@ export function ThemeProvider({
   children: React.ReactNode
 }) {
   const [resolvedTheme, setResolvedTheme] =
-    React.useState<ThemeMode>(() => readThemeFromDom() ?? "light")
+    React.useState<ThemeMode>(DEFAULT_THEME)
 
   React.useEffect(() => {
-    const media = window.matchMedia(
-      "(prefers-color-scheme: dark)",
-    )
+    const stored = readStoredTheme()
     const domTheme = readThemeFromDom()
-    const domSource = readThemeSourceFromDom()
+    const nextTheme = stored ?? domTheme ?? DEFAULT_THEME
+    const nextSource: ThemeSource = stored ? "user" : "default"
 
-    if (domTheme) {
-      setResolvedTheme(domTheme)
-    } else {
-      const nextTheme = resolveTheme()
-      const nextSource = readStoredTheme() ? "user" : "system"
-      setResolvedTheme(nextTheme)
-      applyTheme(nextTheme, nextSource)
-    }
+    setResolvedTheme(nextTheme)
+    applyTheme(nextTheme, nextSource)
 
-    const handleSystemChange = () => {
-      const source = readThemeSourceFromDom() ?? domSource
-
-      if (!readStoredTheme() && source !== "user") {
-        const nextTheme = readSystemTheme()
-        setResolvedTheme(nextTheme)
-        applyTheme(nextTheme, "system")
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== STORAGE_KEY) {
+        return
       }
+      const latest = readStoredTheme()
+      const target = latest ?? DEFAULT_THEME
+      setResolvedTheme(target)
+      applyTheme(target, latest ? "user" : "default")
     }
 
-    media.addEventListener("change", handleSystemChange)
+    window.addEventListener("storage", handleStorage)
 
     return () => {
-      media.removeEventListener(
-        "change",
-        handleSystemChange,
-      )
+      window.removeEventListener("storage", handleStorage)
     }
   }, [])
 
