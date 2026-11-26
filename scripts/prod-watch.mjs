@@ -25,7 +25,9 @@ const watchTargets = [
 const ignoredSegments = new Set([
   ".git",
   ".next",
+  ".wrangler",
   "node_modules",
+  "out",
 ])
 
 let startProcess = null
@@ -101,7 +103,7 @@ async function buildProject(reason) {
 
 async function restartServer() {
   if (startProcess) {
-    log("restarting next start")
+    log("restarting static preview server")
     const old = startProcess
     startProcess = null
     old.kill("SIGTERM")
@@ -110,7 +112,7 @@ async function restartServer() {
       setTimeout(resolve, 3000)
     })
   } else {
-    log("starting next start")
+    log("starting static preview server")
   }
 
   startProcess = spawn(
@@ -127,7 +129,7 @@ async function restartServer() {
     const exited = startProcess
     if (exited) {
       log(
-        `next start exited (${signal ?? code ?? "unknown"})`,
+        `static preview server exited (${signal ?? code ?? "unknown"})`,
       )
     }
     startProcess = null

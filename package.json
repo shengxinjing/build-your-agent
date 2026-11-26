@@ -10,7 +10,9 @@
     "check:secrets": "node scripts/check-secrets.mjs",
     "prod:watch": "node scripts/prod-watch.mjs",
     "build": "pnpm run generate:build-your-agent && next build",
-    "start": "next start",
+    "start": "node scripts/preview-out.mjs",
+    "preview:cf": "pnpm run build && wrangler dev",
+    "deploy:cf": "pnpm run build && wrangler deploy",
     "lint": "next lint",
     "test": "vitest run code-agent-course/ && node --test lib/*.test.ts scripts/*.test.mjs",
     "typecheck": "tsc --noEmit"
@@ -45,6 +47,7 @@
     "postcss": "^8",
     "tailwindcss": "^3.4.3",
     "typescript": "5.5.4",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "wrangler": "^4.168.0"
   }
 }

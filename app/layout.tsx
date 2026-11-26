@@ -28,6 +28,7 @@ const siteDescription =
   "19 章、129 步交互式源码演进教程：用纯 JavaScript 从零构建完整的 Code Agent，支持代码同步高亮、Mermaid 架构图与浏览器内实时沙盒运行。"
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://blog.deepdrink.ai"),
   title: siteTitle,
   description: siteDescription,
   openGraph: {

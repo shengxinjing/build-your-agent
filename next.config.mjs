@@ -15,9 +15,11 @@ const crossOriginHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Configure `pageExtensions`` to include MDX files
+  output: "export",
+  // Configure `pageExtensions` to include MDX files
   pageExtensions: ["js", "jsx", "mdx", "ts", "tsx"],
   images: {
+    unoptimized: true,
     remotePatterns: [
       {
         protocol: "https",
@@ -26,15 +28,18 @@ const nextConfig = {
       },
     ],
   },
-  async headers() {
-    return [
-      {
-        source: "/(.*)",
-        headers: crossOriginHeaders,
-      },
-    ]
-  },
-  // Optionally, add any other Next.js config below
+  ...(process.env.NODE_ENV === "development"
+    ? {
+        async headers() {
+          return [
+            {
+              source: "/(.*)",
+              headers: crossOriginHeaders,
+            },
+          ]
+        },
+      }
+    : {}),
 }
 
 /** @type {import('codehike/mdx').CodeHikeConfig} */

@@ -31,8 +31,9 @@ yarn-error.log*
 __pycache__/
 *.pyc
 
-# vercel
-.vercel
+# cloudflare
+.wrangler
+.dev.vars
 
 # typescript
 *.tsbuildinfo

@@ -12,7 +12,7 @@ An interactive tutorial site — "Build Your Own Code Agent, Step by Step." Buil
 
 The repo has two halves:
 
-- `code-agent-course/` — the course itself (Chinese articles, JavaScript chapter implementations, tests). This is the source of truth and where most work happens.
+- `code-agent-course/` — the course itself (Chinese articles, JavaScript chapter implementations, tests). This is the source of truth and where most work happens. Season 1 (`s00`–`s18`) feeds the live site generator; Season 2 standalone production labs (`p00`–`p05`) and the three-season curriculum blueprint (`ROADMAP.md`) also live here and are not yet wired into the MDX generator.
 - The Next.js app (`app/`, `components/`, `lib/`, `scripts/`) — renders the course as an interactive page.
 
 Most requests are about `code-agent-course`. Do not edit the Next.js app, UI components, or unrelated directories unless asked.
@@ -124,7 +124,8 @@ Markdown is Chinese, friendly to beginners, in plain wording (prefer "write to a
 - **Routing**: `app/[locale]/` handles `en` and `cn`; `/` redirects to `/cn`. Locale helpers are in `lib/i18n.ts`, UI strings in `lib/site-copy.ts`.
 - **Article page**: `app/build-your-agent/article-page.tsx` is the server component. It parses the MDX with Code Hike's `parseRoot`, highlights code server-side for light and dark themes, and passes token data to the client.
 - **Code Stage** (`code-stage.tsx`, client): shows the step's `agent.js` plus the shared `helper.js`, synced to scroll position through Code Hike's selection context. `lib/tutorial-files.ts` parses code-block metadata such as `range=`; `lib/tutorial-files-server.ts` loads the shared helper.
-- **Live Demo** (`livedemo.tsx`, client): WebContainer sandbox with a Monaco editor and xterm terminal, loaded lazily when opened. The WebContainer instance is cached on `window` to survive re-renders. It needs the COEP/COOP headers set in `next.config.mjs`.
+- **Live Demo** (`livedemo.tsx`, client): WebContainer sandbox with a Monaco editor and xterm terminal, loaded lazily when opened. The WebContainer instance is cached on `window` to survive re-renders. It needs the COEP/COOP headers set in `next.config.mjs` (for `next dev`) and `public/_headers` (for Cloudflare static export).
+- **Deployment**: Static export (`output: "export"` -> `out/`), deployed via Cloudflare Workers Static Assets (`wrangler.jsonc`, custom domain `blog.deepdrink.ai`, edge headers in `public/_headers`, edge redirects in `public/_redirects`). Auto-deploys on push to `main` via `.github/workflows/deploy-cloudflare.yml`. Local static preview runs via `pnpm start` (`scripts/preview-out.mjs`).
 - **Theme**: class-based dark mode through `ThemeProvider` and localStorage, with an inline script (`lib/theme-script.ts`) to prevent flashing.
 
 ## Code Style

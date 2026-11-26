@@ -1,0 +1,7 @@
+/*
+  Cross-Origin-Embedder-Policy: credentialless
+  Cross-Origin-Opener-Policy: same-origin
+
+/api/build-your-agent/runtime/*
+  Content-Type: application/json; charset=utf-8
+  Cache-Control: public, max-age=3600
