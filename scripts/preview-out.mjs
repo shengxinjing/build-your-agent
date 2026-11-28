@@ -63,7 +63,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
   const filePath = resolveFile(url.pathname)
 
-  res.setHeader("Cross-Origin-Embedder-Policy", "credentialless")
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp")
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin")
 
   if (!filePath) {

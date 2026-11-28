@@ -5811,17 +5811,13 @@ flowchart TD
 ```mermaid
 flowchart LR
   subgraph BEFORE["压缩前：10 条完整结果"]
-    A["读文件 A：3200 字符"]
-    B["读文件 B：1800 字符"]
-    C["……"]
-    J["读文件 J：2800 字符"]
+    direction TB
+    A["读文件 A：3200 字符"] ~~~ B["读文件 B：1800 字符"] ~~~ C["……"] ~~~ J["读文件 J：2800 字符"]
   end
   BEFORE --> S["只保留最近 3 条<br/>完整内容"]
   subgraph AFTER["压缩后"]
-    A2["Earlier result compacted."]
-    B2["Earlier result compacted."]
-    C2["……"]
-    J2["读文件 J：完整内容"]
+    direction TB
+    A2["Earlier result compacted."] ~~~ B2["Earlier result compacted."] ~~~ C2["……"] ~~~ J2["读文件 J：完整内容"]
   end
   S --> AFTER
 ```

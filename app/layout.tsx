@@ -42,6 +42,25 @@ export const metadata: Metadata = {
   },
 }
 
+const httpsUpgradeScript = `
+  (function() {
+    try {
+      if (
+        window.location.protocol === "http:" &&
+        window.location.hostname === "blog.deepdrink.ai"
+      ) {
+        window.location.replace(
+          "https://" +
+            window.location.host +
+            window.location.pathname +
+            window.location.search +
+            window.location.hash
+        );
+      }
+    } catch (error) {}
+  })();
+`
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -54,6 +73,13 @@ export default function RootLayout({
       className={`${sans.variable} ${mono.variable}`}
     >
       <head>
+        <Script
+          id="https-upgrade-script"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: httpsUpgradeScript,
+          }}
+        />
         <Script
           id="theme-script"
           strategy="beforeInteractive"

@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm"
 const crossOriginHeaders = [
   {
     key: "Cross-Origin-Embedder-Policy",
-    value: "credentialless",
+    value: "require-corp",
   },
   {
     key: "Cross-Origin-Opener-Policy",

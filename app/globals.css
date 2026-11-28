@@ -1015,23 +1015,33 @@ html[data-theme="dark"] .post-list__item:hover {
 
 .journal-prose .mermaid-diagram {
   display: flex;
+  align-items: center;
   justify-content: center;
-  margin: 0.75rem 0;
-  padding: 0.85rem 0.95rem;
+  margin: 0.65rem 0;
+  padding: 0.55rem 0.7rem;
   overflow-x: auto;
   border: 1px solid var(--code-line);
   border-radius: 10px;
   background: color-mix(in srgb, var(--surface-elevated) 88%, var(--code-surface));
+  line-height: 1.35;
+  letter-spacing: normal;
+}
+
+.journal-prose .mermaid-diagram p {
+  margin: 0;
+  line-height: 1.35;
 }
 
 .journal-prose .mermaid-diagram[data-ready="false"] {
-  min-height: 7.5rem;
+  min-height: 6.5rem;
 }
 
 .journal-prose .mermaid-diagram svg {
   display: block;
+  width: auto;
   max-width: 100%;
   height: auto;
+  max-height: min(68vh, 540px);
 }
 
 html.dark .journal-prose .mermaid-diagram svg [filter],

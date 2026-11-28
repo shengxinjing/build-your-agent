@@ -1,6 +1,7 @@
 /*
-  Cross-Origin-Embedder-Policy: credentialless
+  Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Opener-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 /api/build-your-agent/runtime/*
   Content-Type: application/json; charset=utf-8

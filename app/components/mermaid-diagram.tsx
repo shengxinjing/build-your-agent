@@ -24,7 +24,7 @@ const LIGHT_THEME_VARS = {
   darkMode: false,
   background: "transparent",
   fontFamily: FONT_STACK,
-  fontSize: "13px",
+  fontSize: "12px",
   primaryColor: "#ffffff",
   primaryTextColor: "#0f172a",
   primaryBorderColor: "#cbd5e1",
@@ -52,7 +52,7 @@ const DARK_THEME_VARS = {
   darkMode: true,
   background: "transparent",
   fontFamily: FONT_STACK,
-  fontSize: "13px",
+  fontSize: "12px",
   primaryColor: "#111b2e",
   primaryTextColor: "#e2e8f0",
   primaryBorderColor: "#334155",
@@ -76,6 +76,58 @@ const DARK_THEME_VARS = {
   labelTextColor: "#e2e8f0",
 }
 
+const BASE_MERMAID_CONFIG = {
+  startOnLoad: false,
+  suppressErrorRendering: true,
+  theme: "base" as const,
+  look: "classic" as const,
+  layout: "dagre",
+  fontSize: 12,
+  htmlLabels: true,
+  flowchart: {
+    theme: "base" as const,
+    look: "classic" as const,
+    curve: "basis" as const,
+    diagramPadding: 4,
+    htmlLabels: true,
+    minNodeWidth: 0,
+    nodeSpacing: 18,
+    padding: 8,
+    rankSpacing: 22,
+    subGraphTitleMargin: { top: 4, bottom: 14 },
+    useMaxWidth: false,
+    wrappingWidth: 210,
+  },
+  sequence: {
+    theme: "base" as const,
+    look: "classic" as const,
+    actorFontSize: 12,
+    actorMargin: 30,
+    boxMargin: 6,
+    diagramMarginX: 16,
+    diagramMarginY: 8,
+    height: 36,
+    messageFontSize: 12,
+    messageMargin: 24,
+    mirrorActors: false,
+    noteFontSize: 12,
+    noteMargin: 8,
+    useMaxWidth: false,
+    width: 156,
+  },
+  state: {
+    theme: "base" as const,
+    look: "classic" as const,
+    layout: "dagre",
+    dividerMargin: 6,
+    minNodeWidth: 0,
+    nodeSpacing: 20,
+    padding: 6,
+    rankSpacing: 22,
+    useMaxWidth: false,
+  },
+}
+
 function loadMermaid() {
   if (!mermaidLoader) {
     mermaidLoader = import("mermaid").then((mod) => mod.default)
@@ -92,24 +144,8 @@ function ensureConfigured(
   }
 
   mermaid.initialize({
-    startOnLoad: false,
-    suppressErrorRendering: true,
-    theme: "base",
+    ...BASE_MERMAID_CONFIG,
     themeVariables: theme === "dark" ? DARK_THEME_VARS : LIGHT_THEME_VARS,
-    flowchart: {
-      curve: "basis",
-      htmlLabels: true,
-      nodeSpacing: 28,
-      padding: 12,
-      rankSpacing: 34,
-      useMaxWidth: true,
-      wrappingWidth: 260,
-    },
-    sequence: {
-      actorMargin: 36,
-      messageMargin: 28,
-      useMaxWidth: true,
-    },
   })
   activeTheme = theme
 }

@@ -397,9 +397,7 @@ export function LiveDemo({
 
     if (!window.crossOriginIsolated) {
       setStatus("error")
-      setError(
-        "当前页面还没有开启 cross-origin isolation。请重启 Next 开发服务器后再刷新页面。",
-      )
+      setError(getCrossOriginIsolationErrorMessage())
       return
     }
 
@@ -1112,6 +1110,27 @@ function getTerminalTheme(theme: "light" | "dark") {
   }
 }
 
+function getCrossOriginIsolationErrorMessage() {
+  if (!window.isSecureContext) {
+    return "当前页面未使用 HTTPS 安全连接，无法开启 cross-origin isolation。请改用 https:// 访问后重试。"
+  }
+
+  if (window.self !== window.top) {
+    return "当前页面运行在嵌套窗口（iframe）中，未开启 cross-origin isolation。请在新标签页直接打开本页后重试。"
+  }
+
+  const host = window.location.hostname
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1"
+  ) {
+    return "当前页面还没有开启 cross-origin isolation。请重启本地开发服务器后再刷新页面。"
+  }
+
+  return "当前页面还没有开启 cross-origin isolation。请强制刷新页面，或使用最新版桌面端 Chrome / Safari / Firefox 直接访问。"
+}
+
 async function getWebContainer() {
   if (!globalThis.__scrollycodingWebContainerPromise) {
     globalThis.__scrollycodingWebContainerPromise = import(
@@ -1119,7 +1138,7 @@ async function getWebContainer() {
     )
       .then(({ WebContainer }) =>
         WebContainer.boot({
-          coep: "credentialless",
+          coep: "require-corp",
           workdirName: "scrollycoding-demo",
         }),
       )
